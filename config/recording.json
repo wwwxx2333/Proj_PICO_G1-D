@@ -1,0 +1,8 @@
+{
+  "spool": ".local/recording_spool",
+  "max_cache_gb": 20.0,
+  "min_free_gb": 2.0,
+  "image_fps": 20.0,
+  "cameras": ["head", "left_wrist", "right_wrist"],
+  "camera_config_port": 60000
+}
