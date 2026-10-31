@@ -36,7 +36,7 @@ class JoystickControlTests(unittest.TestCase):
 
     def test_mapping_rejects_unsafe_limits(self):
         with self.assertRaises(ValueError):
-            MappingConfig(max_forward_mps=0.2)
+            MappingConfig(max_forward_mps=1.6)
 
 
 if __name__ == "__main__":

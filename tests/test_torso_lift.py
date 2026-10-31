@@ -14,6 +14,7 @@ import pinocchio as pin
 from g1d_pico import __main__ as app
 from g1d_pico.arm_bridge import parse_arm_state
 from g1d_pico.arms import ArmSession
+from g1d_pico.body_config import BodyConfig
 from g1d_pico.input import PoseSample, StickSample
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -30,8 +31,9 @@ class TorsoLiftTests(unittest.TestCase):
         viewer.read_sticks.side_effect=[StickSample(*row,received_at=now) for row in sticks]+[KeyboardInterrupt()]
         viewer.read_poses.return_value=pose(now)
         argv=['app','--no-camera','--live','--with-arms','--skip-arm-home']
-        argv+=['--height-min-m','0.02','--height-max-m','0.08'] if lift else ['--base-only']
-        with patch('sys.argv',argv), patch('g1d_pico.input.FreshTeleVuer',return_value=viewer), \
+        if not lift: argv += ['--base-only']
+        with patch.object(app.BodyConfig, 'load', return_value=BodyConfig()), \
+             patch('sys.argv',argv), patch('g1d_pico.input.FreshTeleVuer',return_value=viewer), \
              patch('g1d_pico.arms.ArmSession',return_value=arms), \
              patch.object(app,'AgvBridge',return_value=base), patch.object(app.time,'sleep'), \
              redirect_stdout(StringIO()):
@@ -63,11 +65,14 @@ class TorsoLiftTests(unittest.TestCase):
         self.assertEqual(arms.step.call_args.kwargs['waist_rate'],0)
         self.assertEqual(base.send.call_args.args[0].lift_normalized,0)
 
-    def test_arms_and_lift_require_verified_feedback_limits(self):
-        with patch('sys.argv',['app','--live','--with-arms']), redirect_stderr(StringIO()):
-            with self.assertRaises(SystemExit): app.parse_args()
-        with patch('sys.argv',['app','--live','--with-arms','--height-min-m','0.02','--height-max-m','0.08']):
-            self.assertFalse(app.parse_args().base_only)
+    def test_arms_and_lift_use_fixed_file_bounds(self):
+        body = BodyConfig(height_min_m=.02, height_max_m=.08)
+        with patch('sys.argv', ['app', '--live', '--with-arms']), \
+             patch.object(app.BodyConfig, 'load', return_value=body) as loader:
+            args = app.parse_args()
+        loader.assert_called_once_with(ROOT / 'config/body.jsonc')
+        self.assertEqual((args.height_min_m, args.height_max_m), (.02, .08))
+        self.assertFalse(args.base_only)
 
     def test_older_joystick_timestamp_goes_with_atomic_upper_body_command(self):
         session=object.__new__(ArmSession)
@@ -119,7 +124,7 @@ class LauncherTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         (self.root / 'deploy').mkdir()
-        for name in ('run_pc2_arms.sh', 'run_pc2_base.sh'):
+        for name in ('run_pc2_arms.sh', 'run_pc2_base.sh', 'record_pc2.sh'):
             shutil.copy2(ROOT / 'deploy' / name, self.root / 'deploy' / name)
 
         def executable(path, text):
@@ -150,10 +155,12 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.splitlines()
 
-    def test_low_level_launcher_still_requires_explicit_height_limits(self):
+    def test_low_level_launcher_reads_height_limits_from_body_config(self):
         result = self.run_launcher('--with-lift', script='run_pc2_base.sh')
-        self.assertEqual(result.returncode, 2)
-        self.assertIn('rt/hispeed_state.y', result.stderr)
+        args = self.arguments(result)
+        self.assertNotIn('--base-only', args)
+        self.assertNotIn('--height-min-m', args)
+        self.assertNotIn('--height-max-m', args)
 
     def test_arms_default_launch_enables_confirmed_column_travel(self):
         for options in ((), ('--with-hands',), ('--with-lift',)):
@@ -161,8 +168,8 @@ class LauncherTests(unittest.TestCase):
                 args = self.arguments(self.run_launcher(*options))
                 self.assertIn('--with-arms', args)
                 self.assertNotIn('--base-only', args)
-                self.assertEqual(args[args.index('--height-min-m') + 1], '0.0')
-                self.assertEqual(args[args.index('--height-max-m') + 1], '0.42')
+                self.assertNotIn('--height-min-m', args)
+                self.assertNotIn('--height-max-m', args)
                 self.assertEqual('--with-hands' in args, '--with-hands' in options)
 
     def test_without_lift_preserves_base_arms_and_optional_hands(self):
@@ -173,23 +180,28 @@ class LauncherTests(unittest.TestCase):
         self.assertNotIn('--height-min-m', args)
         self.assertNotIn('--height-max-m', args)
 
-    def test_without_lift_rejects_conflicting_height_or_speed_options(self):
-        for option in ('--height-min-m', '--height-max-m', '--max-lift'):
-            with self.subTest(option=option):
-                result = self.run_launcher('--without-lift', option, '0.1')
-                self.assertEqual(result.returncode, 2)
-                self.assertIn('cannot be combined', result.stderr)
+    def test_launchers_reject_removed_config_and_tuning_options(self):
+        for script in ('run_pc2_arms.sh', 'run_pc2_base.sh', 'record_pc2.sh'):
+            for option in ('--config', '--body-config', '--arm-config', '--max-forward-mps',
+                           '--max-yaw-rps', '--max-lift', '--deadzone',
+                           '--height-min-m', '--height-max-m'):
+                with self.subTest(script=script, option=option):
+                    result = self.run_launcher(option, '0.1', script=script)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn('Edit project config/', result.stderr)
 
-    def test_complete_launcher_forwards_custom_lift_and_hands_without_base_only(self):
-        args = self.arguments(self.run_launcher('--with-hands', '--with-lift',
-                                               '--height-min-m', '0.02', '--height-max-m', '0.08',
-                                               '--max-lift', '0.10'))
-        for flag in ('--with-arms', '--with-hands', '--height-min-m', '--height-max-m', '--max-lift'):
-            self.assertEqual(args.count(flag), 1)
-        self.assertNotIn('--base-only', args)
-        self.assertEqual(args[args.index('--height-min-m') + 1], '0.02')
-        self.assertEqual(args[args.index('--height-max-m') + 1], '0.08')
-        self.assertEqual(args[args.index('--max-lift') + 1], '0.10')
+    def test_recording_passes_task_metadata_and_feature_flags_only(self):
+        args = self.arguments(self.run_launcher('--instruction', '实验室取物', '--scene', 'lab209',
+                                               '--objects', 'cup', '--', '--with-hands',
+                                               script='record_pc2.sh'))
+        self.assertIn('g1d_pico.recording', args)
+        self.assertIn('实验室取物', args)
+        self.assertIn('--with-hands', args)
+        self.assertNotIn('--config', args)
+
+    def test_skip_home_is_still_an_explicit_feature_option(self):
+        args = self.arguments(self.run_launcher('--skip-home'))
+        self.assertIn('--skip-arm-home', args)
 
     def test_base_default_remains_base_only(self):
         args = self.arguments(self.run_launcher(script='run_pc2_base.sh'))

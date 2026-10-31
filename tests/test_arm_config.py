@@ -22,8 +22,7 @@ class ConfigTests(unittest.TestCase):
         self.assertAlmostEqual(ArmConfig(joint_speed_rad_s=0.5).bridge_speed_rad_s, 0.6)
         self.assertEqual(ArmConfig(joint_speed_rad_s=0.5).home_speed_rad_s, 0.15)
         for bad in ({'joint_speed_rad_s': 2.}, {'joint_speed_rad_s': float('nan')},
-                    {'waist_yaw_speed_rad_s': 0.3}, {'waist_yaw_limit_rad': 2.7},
-                    {'waist_yaw_accel_rad_s2': float('nan')}, {'control_hz': 0.}, {'filter_weights': [0., 1.]},
+                    {'control_hz': 0.}, {'filter_weights': [0., 1.]},
                     {'filter_weights': [0.4, 0.4]}, {'home_speed_rad_s': True}):
             with self.assertRaises(ValueError):
                 ArmConfig(**bad)
@@ -33,7 +32,7 @@ class ConfigTests(unittest.TestCase):
             def get_lock(self):
                 return nullcontext()
         viewer = object.__new__(FreshTeleVuer)
-        viewer._stick_snapshot = Snapshot([0.] * 9)
+        viewer._stick_snapshot = Snapshot([0.] * 10)
         viewer._pose_snapshot = Snapshot([0.] * 35)
         event = SimpleNamespace(value={
             'left': np.eye(4).ravel(order='F'), 'right': np.eye(4).ravel(order='F'),

@@ -7,6 +7,7 @@ import socket
 
 from .bridge import AgvBridge
 from .control import MotionCommand
+from .limits import AGV_FORWARD_MPS, AGV_YAW_RPS, LIFT_NORMALIZED, valid_height_window
 
 
 def _handshake(line: bytes) -> tuple[str, float, float]:
@@ -17,7 +18,9 @@ def _handshake(line: bytes) -> tuple[str, float, float]:
         raise ValueError("invalid bridge handshake") from exc
     if version != "G1D1" or mode not in {"base", "lift", "both"}:
         raise ValueError("unsupported bridge protocol or mode")
-    if not all(math.isfinite(x) for x in (lower, upper)) or not 0 <= lower < upper <= 3:
+    # Base-only mode carries unused legacy height placeholders (0, 1).
+    if (not all(math.isfinite(x) for x in (lower, upper)) or not 0 <= lower < upper
+            or (mode != 'base' and not valid_height_window(lower, upper))):
         raise ValueError("invalid height limits")
     return mode, lower, upper
 
@@ -29,7 +32,7 @@ def _command(line: bytes) -> MotionCommand:
         raise ValueError("invalid motion command") from exc
     if len(values) != 3 or not all(math.isfinite(value) for value in values):
         raise ValueError("invalid motion command")
-    if abs(values[0]) > 0.10 or abs(values[1]) > 0.15 or abs(values[2]) > 0.15:
+    if any(abs(v) > cap for v, cap in zip(values, (AGV_FORWARD_MPS, AGV_YAW_RPS, LIFT_NORMALIZED))):
         raise ValueError("motion command exceeds hard limit")
     return MotionCommand(*values)
 

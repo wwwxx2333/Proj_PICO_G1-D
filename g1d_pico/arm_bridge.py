@@ -8,6 +8,7 @@ import threading
 import time
 import numpy as np
 from .recording.telemetry import emit
+from .bridge_contract import require_current_limits
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,7 @@ class ArmBridge:
         parameters = (speed_rad_s, yaw_limit_rad, yaw_speed_rad_s, yaw_accel_rad_s2,
                       pitch_min_rad, pitch_max_rad, pitch_speed_rad_s, pitch_accel_rad_s2,
                       pitch_max_error_rad, pitch_stall_timeout_s, pitch_min_progress_rad)
+        require_current_limits(binary, environment)
         self.process = subprocess.Popen([str(binary), interface, *map(str, parameters)], stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, env=environment)
         os.set_blocking(self.process.stdin.fileno(), False)

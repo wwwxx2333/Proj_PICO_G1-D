@@ -18,6 +18,7 @@ PC2 上本项目新增的代码、依赖源码、证书和编译产物统一位�
 ```text
 /home/unitree/Proj/Proj_PICO_G1-D/
 ├── README.md
+├── config/                    # body.jsonc / arms.jsonc / recording.jsonc
 ├── g1d_pico/                  # 遥操作 Python 代码
 ├── deploy/                    # 准备、编译、启动脚本与说明
 ├── tests/                     # 本项目测试
@@ -124,7 +125,7 @@ bash deploy/run_pc2_base.sh
 启动器不需要 `sudo`，不依赖图形桌面；保持 SSH 终端打开以查看日志。
 
 进入真机模式会开始调用底盘接口；尚未使能时下发零速度。只有新鲜 PICO 输入、摇杆回中并按 A 后才允许非零指令。
-默认速度上限：前后 `0.10 m/s`、转向 `0.15 rad/s`。
+底盘速度和摇杆死区读取 `config/body.jsonc`；默认速度上限为前后 `0.10 m/s`、转向 `0.15 rad/s`。该文件还包括立柱和腰部参数，纯底盘模式只使用其中的底盘映射。配置调整与同步见 [BODY_CONFIG.md](BODY_CONFIG.md)。
 
 ## 4. PICO 打开 PC2 页面
 

@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <stdexcept>
+#include "g1d_limits.hpp"
 
 namespace g1d {
 // Bitmask: an angle boundary and following-error boundary can coincide.
@@ -12,7 +13,8 @@ enum class PitchFollowing { Following=0, WaitCenter=1, WaitPush=2 };
 using Waist = std::array<double, 2>; // lowstate[12] yaw + dedicated waistpitchstate pitch.
 inline bool ValidWaist(const Waist& q) {
     return std::isfinite(q[0]) && std::isfinite(q[1]) &&
-           std::abs(q[0])<=2.7053+0.02 && q[1]>=-0.04363-0.02 && q[1]<=2.3562+0.02;
+           std::abs(q[0])<=limits::WaistYawRad+0.02 &&
+           q[1]>=limits::WaistPitchMinRad-0.02 && q[1]<=limits::WaistPitchMaxRad+0.02;
 }
 
 class WaistGuard {
@@ -27,13 +29,13 @@ public:
           pitch_speed_rad_s(pitch_speed), pitch_acceleration_rad_s2(pitch_acceleration),
           pitch_max_error_rad(pitch_max_error), pitch_stall_timeout_s(pitch_stall_timeout),
           pitch_min_progress_rad(pitch_min_progress) {
-        if (!std::isfinite(limit) || limit<0.087 || limit>1.0472 ||
+        if (!std::isfinite(limit) || limit<0 || limit>limits::WaistYawRad ||
             !std::isfinite(speed) || speed<0.02 || speed>0.20 ||
             !std::isfinite(acceleration) || acceleration<0.05 || acceleration>0.50)
             throw std::runtime_error("invalid waist yaw limit/speed/acceleration");
         // Pitch model limits are asymmetric: -0.04363..2.3562 rad, not +/-yaw.
-        if (!std::isfinite(pitch_min) || pitch_min< -0.02 || pitch_min>0.0 ||
-            !std::isfinite(pitch_max) || pitch_max<0.087 || pitch_max>1.0472 ||
+        if (!std::isfinite(pitch_min) || pitch_min<limits::WaistPitchMinRad ||
+            !std::isfinite(pitch_max) || pitch_max>limits::WaistPitchMaxRad || pitch_min>=pitch_max ||
             !std::isfinite(pitch_speed) || pitch_speed<0.01 || pitch_speed>0.15 ||
             !std::isfinite(pitch_acceleration) || pitch_acceleration<0.02 || pitch_acceleration>0.30)
             throw std::runtime_error("invalid waist pitch limits/speed/acceleration");

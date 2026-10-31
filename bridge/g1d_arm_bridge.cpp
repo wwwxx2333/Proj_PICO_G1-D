@@ -59,6 +59,7 @@ void PublishPitch(ChannelPublisher<MotorCmd_>& publisher, double pitch) {
 }
 
 int main(int argc, char** argv) {
+    if (g1d::limits::PrintIfRequested(argc, argv, std::cout)) return 0;
     if (argc != 2 && argc != 3 && argc != 6 && argc != 10 && argc != 13) {
         std::cerr << "Usage: g1d_arm_bridge eth0 [arm_speed [yaw_limit yaw_speed yaw_acceleration"
                      " [pitch_min pitch_max pitch_speed pitch_acceleration"

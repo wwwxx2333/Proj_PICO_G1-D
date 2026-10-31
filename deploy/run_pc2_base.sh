@@ -5,7 +5,8 @@ set -euo pipefail
 
 usage() {
     echo "Usage: bash deploy/run_pc2_base.sh [--camera-only | --with-arms | --with-arms-and-hands]"
-    echo "       [--with-lift --height-min-m MIN --height-max-m MAX [--max-lift SPEED]]"
+    echo "       [--with-lift]"
+    echo "Settings: project config/body.jsonc and config/arms.jsonc (no CLI overrides)."
     echo "Default: live base control and camera; right A arms, right B disarms."
     echo "Height limits must be verified rt/hispeed_state.y coordinates, not overall robot height."
     echo "Optional environment: PICO_G1D_PYTHON=/absolute/path/to/pico_g1d/bin/python"
@@ -15,9 +16,6 @@ with_arms=false
 with_hands=false
 with_lift=false
 mode_selected=false
-height_min=""
-height_max=""
-max_lift=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --help) usage; exit 0 ;;
@@ -31,25 +29,17 @@ while [[ $# -gt 0 ]]; do
             esac
             shift ;;
         --with-lift) with_lift=true; shift ;;
-        --height-min-m|--height-max-m|--max-lift)
-            if [[ $# -lt 2 || $2 == --* ]]; then echo "Missing value for $1" >&2; exit 2; fi
-            case "$1" in
-                --height-min-m) height_min=$2 ;;
-                --height-max-m) height_max=$2 ;;
-                --max-lift) max_lift=$2 ;;
-            esac
-            shift 2 ;;
+        --config|--body-config|--arm-config|--max-forward-mps|--max-yaw-rps|--max-lift|--deadzone|--height-min-m|--height-max-m)
+            echo "Removed option: $1. Edit project config/body.jsonc, config/arms.jsonc or config/recording.jsonc and restart." >&2
+            exit 2 ;;
         *) usage >&2; exit 2 ;;
     esac
 done
 if $with_lift; then
-    if $camera_only || [[ -z "$height_min" || -z "$height_max" ]]; then
-        echo "--with-lift needs live control and both --height-min-m/--height-max-m (rt/hispeed_state.y)." >&2
+    if $camera_only; then
+        echo "--with-lift needs live control; limits come from config/body.jsonc." >&2
         exit 2
     fi
-elif [[ -n "$height_min" || -n "$height_max" || -n "$max_lift" ]]; then
-    echo "Height/speed options require --with-lift." >&2
-    exit 2
 fi
 if [[ $(uname -m) != aarch64 ]]; then
     echo "Run this launcher on the robot's ARM64 PC2, not the desktop." >&2
@@ -118,10 +108,7 @@ cd "$project_root"
 arguments=(--robot-ip 127.0.0.1 --cert "$cert" --key "$key")
 if ! $camera_only; then
     arguments+=(--live --network-interface eth0 --bridge-bin "$bridge_bin")
-    if $with_lift; then
-        arguments+=(--height-min-m "$height_min" --height-max-m "$height_max")
-        if [[ -n "$max_lift" ]]; then arguments+=(--max-lift "$max_lift"); fi
-    else
+    if ! $with_lift; then
         arguments+=(--base-only)
     fi
 fi

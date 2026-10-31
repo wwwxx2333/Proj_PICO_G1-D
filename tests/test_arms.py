@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 from unittest.mock import AsyncMock
 from contextlib import nullcontext
 from types import SimpleNamespace
+from g1d_pico.body_config import BodyConfig
 import asyncio
 import numpy as np
 import pinocchio as pin
@@ -128,7 +129,7 @@ class ArmSessionTests(unittest.TestCase):
             def get_lock(self):
                 return nullcontext()
         viewer = object.__new__(FreshTeleVuer)
-        viewer._stick_snapshot = Snapshot([0.] * 9)
+        viewer._stick_snapshot = Snapshot([0.] * 10)
         viewer._pose_snapshot = Snapshot([0.] * 37)
         viewer._head_snapshot = Snapshot([0.] * 17)
         pose = np.eye(4)
@@ -160,8 +161,9 @@ class ArmSessionTests(unittest.TestCase):
         arms, base = Mock(), Mock()
         arms.home_complete = True
         arms.step.side_effect = [None, ValueError("tracking jump")]
-        args = SimpleNamespace(no_camera=True, live=True, base_only=True, lift_only=False,
-                               with_arms=True, with_hands=False, skip_arm_home=True, arm_config=URDF.parents[2] / "config/arms.json", cert=None, key=None, bridge_bin=Path("unused"),
+        args = SimpleNamespace(body_config=URDF.parents[2] / "config/body.jsonc", body_settings=BodyConfig(),
+                               no_camera=True, live=True, base_only=True, lift_only=False,
+                               with_arms=True, with_hands=False, skip_arm_home=True, arm_config=URDF.parents[2] / "config/arms.jsonc", cert=None, key=None, bridge_bin=Path("unused"),
                                network_interface="eth0", remote_bridge_port=None,
                                height_min_m=None, height_max_m=None, max_forward_mps=0.1,
                                max_yaw_rps=0.15, max_lift=0.15, arm_bridge_bin=Path("unused"),

@@ -54,7 +54,7 @@ void TestOutsideWindowAndFollowingLead() {
     assert(!g1d::ValidWaist({3.,0}));
     assert(!g1d::ValidWaist({0,std::numeric_limits<double>::quiet_NaN()}));
     bool rejected=false;
-    try { g1d::WaistGuard invalid(2.7); } catch (const std::runtime_error&) { rejected=true; }
+    try { g1d::WaistGuard invalid(2.8); } catch (const std::runtime_error&) { rejected=true; }
     assert(rejected);
 }
 
@@ -173,7 +173,7 @@ void TestPitchLimitsAndFollowingLead() {
     }
     assert(reached_cap && waist.pitch_following==g1d::PitchFollowing::WaitCenter);
     assert(waist.output[1]==measured[1]); // Stalled target is cancelled after timeout.
-    for (double minimum : {-0.04, 0.1, std::numeric_limits<double>::quiet_NaN()}) {
+    for (double minimum : {-0.05, 0.5, std::numeric_limits<double>::quiet_NaN()}) {
         bool rejected=false;
         try { g1d::WaistGuard invalid(.5,.1,.2,minimum,.5,.08,.16); }
         catch (const std::runtime_error&) { rejected=true; }

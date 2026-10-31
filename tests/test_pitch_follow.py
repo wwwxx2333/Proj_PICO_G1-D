@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 import numpy as np
 from g1d_pico.arm_bridge import ArmBridge, ArmState, parse_arm_state
-from g1d_pico.arm_config import ArmConfig
+from g1d_pico.body_config import BodyConfig
 from g1d_pico.arms import ArmSession
 from g1d_pico.input import PoseSample
 
@@ -15,27 +15,29 @@ ROOT=Path(__file__).resolve().parents[1]
 
 class PitchFollowingTests(unittest.TestCase):
     def test_new_configuration_defaults_file_and_validation(self):
-        config=ArmConfig.load(ROOT/'config/arms.json')
+        config=BodyConfig.load(ROOT/'config/body.jsonc')
         self.assertEqual(config.waist_pitch_max_error_rad, .10)
         self.assertEqual(config.waist_pitch_stall_timeout_s, 1.5)
         self.assertEqual(config.waist_pitch_min_progress_rad, .005)
         for key in ('waist_pitch_max_error_rad','waist_pitch_stall_timeout_s','waist_pitch_min_progress_rad'):
             for bad in (0, 100, float('nan'), float('inf'), True):
-                with self.assertRaises(ValueError): ArmConfig(**{key:bad})
+                with self.assertRaises(ValueError): BodyConfig(**{key:bad})
         # Old JSON can omit new keys and gets the validated defaults.
         with tempfile.TemporaryDirectory() as directory:
-            path=Path(directory)/'arms.json'; path.write_text('{}')
-            self.assertEqual(ArmConfig.load(path), ArmConfig())
+            path=Path(directory)/'body.jsonc'; path.write_text('{}')
+            self.assertEqual(BodyConfig.load(path), BodyConfig())
 
     def test_configuration_is_forwarded_to_cpp_process(self):
         with tempfile.TemporaryDirectory() as directory:
             binary=Path(directory)/'bridge'; binary.touch()
             process=Mock()
             with patch('g1d_pico.arm_bridge.subprocess.Popen', return_value=process) as popen, \
+                 patch('g1d_pico.arm_bridge.require_current_limits') as contract, \
                  patch('g1d_pico.arm_bridge.os.set_blocking'), \
                  patch('g1d_pico.arm_bridge.threading.Thread'):
                 ArmBridge(binary,'eth0',pitch_max_error_rad=.12,pitch_stall_timeout_s=2,
                           pitch_min_progress_rad=.006)
+            contract.assert_called_once()
             args=popen.call_args.args[0]
             self.assertEqual(len(args),13)
             self.assertEqual(list(map(float,args[-3:])),[.12,2,.006])
@@ -70,11 +72,11 @@ class PitchFollowingTests(unittest.TestCase):
         ik.checked_q.side_effect=lambda q:q.copy()
         ik.poses.return_value=[np.eye(4),np.eye(4)]
         ik.gravity.return_value=np.zeros(14)
-        config=ArmConfig(waist_pitch_max_error_rad=.12,waist_pitch_stall_timeout_s=2,
+        config=BodyConfig(waist_pitch_max_error_rad=.12,waist_pitch_stall_timeout_s=2,
                          waist_pitch_min_progress_rad=.006)
         with patch('g1d_pico.arms.ArmBridge',return_value=bridge) as constructor, \
              patch('g1d_pico.arms.DualArmIK',return_value=ik):
-            session=ArmSession(Path('unused'),'eth0',Path('unused'),config=config)
+            session=ArmSession(Path('unused'),'eth0',Path('unused'),body_config=config)
         self.assertEqual(constructor.call_args.kwargs['pitch_max_error_rad'],.12)
         self.assertEqual(constructor.call_args.kwargs['pitch_stall_timeout_s'],2)
         self.assertEqual(constructor.call_args.kwargs['pitch_min_progress_rad'],.006)

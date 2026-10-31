@@ -1,6 +1,7 @@
 // Read "vx vyaw vz" from stdin and control G1-D through official SDK2.
 // A command expires after 300 ms; missing height feedback stops column lift.
 #include "g1d_lift_guard.hpp"
+#include "g1d_agv_command.hpp"
 #include "g1d_recording.hpp"
 
 #include <algorithm>
@@ -45,24 +46,12 @@ void OnHeight(const void* message) {
     }
 }
 
-struct Command {
-    float vx = 0.0f;
-    float vyaw = 0.0f;
-    float vz = 0.0f;
-};
+using Command = g1d::AgvCommand;
 
 enum class Mode { Base, Lift, Both };
 
 bool ParseCommand(const std::string& line, Command& out) {
-    std::istringstream stream(line);
-    Command parsed;
-    std::string extra;
-    if (!(stream >> parsed.vx >> parsed.vyaw >> parsed.vz) || (stream >> extra)) return false;
-    if (!std::isfinite(parsed.vx) || !std::isfinite(parsed.vyaw) || !std::isfinite(parsed.vz)) return false;
-    // Independent caps protect against an accidental Python-side configuration change.
-    if (std::fabs(parsed.vx) > 0.10f || std::fabs(parsed.vyaw) > 0.15f || std::fabs(parsed.vz) > 0.15f) return false;
-    out = parsed;
-    return true;
+    return g1d::ParseAgvCommand(line, out);
 }
 
 bool ParseHeight(const char* text, float& out) {
@@ -76,6 +65,7 @@ bool ParseHeight(const char* text, float& out) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+    if (g1d::limits::PrintIfRequested(argc, argv, std::cout)) return 0;
     if (argc != 5) {
         std::cerr << "Usage: g1d_agv_bridge NETWORK_INTERFACE HEIGHT_MIN_M HEIGHT_MAX_M base|lift|both\n";
         return 2;
@@ -91,8 +81,9 @@ int main(int argc, char* argv[]) {
     }
     float height_min = 0.0f, height_max = 0.0f;
     if (!ParseHeight(argv[2], height_min) || !ParseHeight(argv[3], height_max) ||
-        height_min < 0.0f || height_min >= height_max || height_max > 3.0f) {
-        std::cerr << "Invalid verified height limits.\n";
+        height_min < 0.0f || height_min >= height_max ||
+        (mode != Mode::Base && !g1d::limits::ValidHeightWindow(height_min, height_max))) {
+        std::cerr << "Invalid height feedback window: require 0 <= min < max, span <= 0.42 m for lift.\n";
         return 2;
     }
     std::signal(SIGINT, OnSignal);
@@ -152,7 +143,10 @@ int main(int argc, char* argv[]) {
                     const std::string line = pending.substr(0, newline);
                     pending.erase(0, newline + 1);
                     if (!ParseCommand(line, parsed)) {
-                        std::cerr << "Invalid motion command; stopping.\n";
+                        std::cerr << "Invalid motion command; stopping. SDK2 limits: |vx|<="
+                                  << g1d::limits::AgvForwardMps << " m/s, |vyaw|<="
+                                  << g1d::limits::AgvYawRps << " rad/s, |vz|<="
+                                  << g1d::limits::LiftNormalized << ".\n";
                         failed = true;
                         stdin_open = false;
                         break;

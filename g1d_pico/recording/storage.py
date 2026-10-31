@@ -100,6 +100,9 @@ class EpisodeStore:
         self.streams = Counter()
         self.dropped = {}
         self.last_seq = {}
+        self.sequence_baselines = {}
+        self.drop_baselines = {}
+        self.segmented = metadata.get('recording_mode') == 'manual_l3'
         self.sequence_gaps = Counter()
         self.reason = None
         self.stop_monotonic = None
@@ -169,11 +172,18 @@ class EpisodeStore:
             raise ValueError('invalid telemetry stream')
         producer = str(event.get('producer', 'unknown'))
         seq = int(event.get('seq', 0))
+        # A control process lives across episodes; its counters also include
+        # intentional non-recording time. Use first observed values as baselines.
+        total_drops = int(event.get('dropped_total', 0))
+        if self.segmented and producer not in self.last_seq:
+            self.sequence_baselines[producer] = seq - 1
+            self.last_seq[producer] = seq - 1
+            self.drop_baselines[producer] = total_drops
         previous = self.last_seq.get(producer, 0)
         if seq > previous:
             self.sequence_gaps[producer] += max(0, seq - previous - 1)
             self.last_seq[producer] = seq
-        self.dropped[producer] = max(self.dropped.get(producer, 0), int(event.get('dropped_total', 0)))
+        self.dropped[producer] = max(self.dropped.get(producer, 0), max(0, total_drops - self.drop_baselines.get(producer, 0)))
         self.write('telemetry.jsonl', encode(event))
         self.streams[stream] += 1
         if stream == 'bridge_exit':
@@ -234,6 +244,7 @@ class EpisodeStore:
                 control_exit_code=self.control_exit_code, bridge_exits=self.bridge_exits,
                 frame_counts=dict(self.frames), stream_counts=dict(self.streams),
                 producer_reported_drops=self.dropped, sequence_gaps=dict(self.sequence_gaps),
+                sequence_baselines=self.sequence_baselines, producer_drop_baselines=self.drop_baselines,
                 timestamp_quality='Software receive times; NOT hardware-synchronized exposure times',
                 files={name: {'bytes': self.sizes[name], 'sha256': digest.hexdigest()}
                        for name, digest in self.hashes.items()}, **(extra or {}))

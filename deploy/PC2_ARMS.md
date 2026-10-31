@@ -1,5 +1,9 @@
 # PC2：官方方法双臂 IK 与启动归位
 
+当前双臂参数在 `config/arms.jsonc`，底盘、立柱及腰部参数在 `config/body.jsonc`。本次配置拆分无需重编译；已有部署按 [BODY_CONFIG.md](BODY_CONFIG.md) 同步代码、启动脚本与两份配置。下方编译步骤用于此前控制功能首次安装。
+
+当前默认配置为 `.jsonc`。已有项目升级时先按 [JSONC 配置迁移说明](ARM_TUNING.md) 保留 PC2 参数并更新代码；仅本次扩展名迁移无需执行下文针对历史功能更新的 C++ 编译。
+
 2026-10-26 更新。可选 Dex3-1 双手控制见 [PC2_HANDS.md](PC2_HANDS.md)。
 
 左 Y 运行中复位与集中调参见 [ARM_TUNING.md](ARM_TUNING.md)。右摇杆转腰与立柱升降见 [PC2_TORSO_LIFT.md](PC2_TORSO_LIFT.md)。

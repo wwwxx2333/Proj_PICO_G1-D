@@ -2,7 +2,8 @@
 import time
 
 
-def wait_for_recorder(worker, receive, notice, abort_requested, stall_after=60.0):
+def wait_for_recorder(worker, receive, notice, abort_requested, stall_after=60.0, *,
+                      finished=False, failed=False, on_message=None):
     """No total-time kill: slow, progressing fsync is valid work.
 
     A stall warning is informational. Only an explicit interruption during this
@@ -11,8 +12,6 @@ def wait_for_recorder(worker, receive, notice, abort_requested, stall_after=60.0
     last_progress = time.monotonic()
     last_warning = last_progress
     last_key = None
-    finished = False
-    failed = False
     eof = False
     stage = 'waiting_for_finalization'
 
@@ -25,7 +24,10 @@ def wait_for_recorder(worker, receive, notice, abort_requested, stall_after=60.0
         except EOFError:
             eof = True
             return
-        notice('RECORDER ' + str(message))
+        if on_message is None:
+            notice('RECORDER ' + str(message))
+        else:
+            on_message(message)
         state = message.get('state')
         if state == 'finalizing':
             stage = message.get('stage', 'unknown')
@@ -37,7 +39,7 @@ def wait_for_recorder(worker, receive, notice, abort_requested, stall_after=60.0
             finished = True
             stage = 'worker_cleanup'
             last_progress = time.monotonic()
-        elif state == 'error':
+        elif state == 'error' or (state == 'stopped' and message.get('reason') == 'WRITE_ERROR'):
             failed = True
 
     while worker.is_alive():

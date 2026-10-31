@@ -1,6 +1,7 @@
 """Recorder worker and local-only camera subscriber; never commands a robot."""
 from collections import Counter
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -38,13 +39,13 @@ def camera_config(context, port):
     try:
         request.send(b'GET_DATA')
         if not request.poll(3000):
-            raise RuntimeError('Local TeleImager port 60000 did not answer; recorder not started')
+            raise RuntimeError(f'Local TeleImager port {port} did not answer; recorder not started')
         return request.recv_json()
     finally:
         request.close()
 
 
-def run_worker(settings, metadata, socket_path, status, stop):
+def run_worker(settings, metadata, socket_path, status, stop, cutoff=None, reason_code=None):
     """Executed in a spawned process. IPC and ZMQ queues are bounded."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     import zmq
@@ -74,9 +75,11 @@ def run_worker(settings, metadata, socket_path, status, stop):
             subscriber.setsockopt(zmq.SUBSCRIBE, b'')
             subscriber.connect(f'tcp://127.0.0.1:{port}')
             sockets[subscriber] = camera
+        started_at = time.monotonic()
         store = EpisodeStore(settings['spool'], int(settings['max_cache_gb'] * 1e9),
                              int(settings['min_free_gb'] * 1e9),
-                             {**metadata, 'recording_settings': settings,
+                             {**metadata, 'recording_started_monotonic_s': started_at,
+                              'recording_settings': settings,
                               'camera_config': config})
         receiver.bind(socket_path)
         receiver.setblocking(False)
@@ -112,6 +115,11 @@ def run_worker(settings, metadata, socket_path, status, stop):
                         continue
                     try:
                         event = json.loads(data)
+                        if cutoff is not None:
+                            emitted = event.get('emitted_monotonic_s', 0.0)
+                            if (not isinstance(emitted, (int, float)) or not math.isfinite(emitted)
+                                    or emitted < started_at or (cutoff.value and emitted > cutoff.value)):
+                                continue  # Do not import idle time or the previous episode's tail.
                         event['recorder_received_monotonic_s'] = time.monotonic()
                         store.event(event)
                     except RecordingStopped:
@@ -125,7 +133,7 @@ def run_worker(settings, metadata, socket_path, status, stop):
                 received = time.monotonic()
                 incoming[camera] += 1
                 last_frame[camera] = received
-                if store.reason or stop_since is not None:
+                if store.reason or stop_since is not None or stop.is_set():
                     continue
                 if len(jpg) < 4 or not jpg.startswith(b'\xff\xd8') or not jpg.endswith(b'\xff\xd9'):
                     invalid[camera] += 1
@@ -147,14 +155,18 @@ def run_worker(settings, metadata, socket_path, status, stop):
                     poller.unregister(subscriber)
                     subscriber.close()
                 sockets.clear()
-            if now - last_status >= 5.0:
+                if cutoff is not None:
+                    break  # Segmented mode finalizes immediately on quota/write stop.
+            if store.reason is None and stop_since is None and now - last_status >= 5.0:
                 status.send({'state': 'progress', 'recording': store.reason is None,
                              'cache_gb': round(store.used / 1e9, 3),
                              'frames': dict(store.frames),
                              'camera_age_s': {c: None if c not in last_frame else round(now-last_frame[c], 2)
                                               for c in settings['cameras']}})
                 last_status = now
-        store.finish(progress=FinalizationProgress(status), extra={'camera_messages_received': dict(incoming),
+        reason = 'L3_STOP' if reason_code is not None and reason_code.value == 1 else 'CONTROL_ENDED'
+        store.finish(reason, progress=FinalizationProgress(status), extra={'recording_requested_stop_monotonic_s': cutoff.value if cutoff is not None else None,
+                            'camera_messages_received': dict(incoming),
                             'invalid_jpegs': dict(invalid), 'malformed_telemetry': malformed,
                             'expected_cameras': settings['cameras'],
                             'camera_frames_missing': [c for c in settings['cameras'] if not store.frames[c]]})

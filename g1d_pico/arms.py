@@ -4,26 +4,28 @@ import numpy as np
 import pinocchio as pin
 from .arm_bridge import ArmBridge
 from .arm_config import ArmConfig
+from .body_config import BodyConfig
 from .arm_home import HomeTrajectory
 from .arm_ik import DualArmIK, IKTargetRejected
 from .arm_math import Clutch
 
 
 class ArmSession:
-    def __init__(self, binary, interface, urdf, startup_home=False, config=None):
+    def __init__(self, binary, interface, urdf, startup_home=False, config=None, *, body_config=None):
         self.config = config or ArmConfig()
+        self.body_config = body_config or BodyConfig()
         self.ik = DualArmIK(urdf, self.config.filter_weights)  # Includes IPOPT warm-up before creating DDS processes.
         self.bridge = ArmBridge(binary, interface, self.config.bridge_speed_rad_s,
-                                yaw_limit_rad=self.config.waist_yaw_limit_rad,
-                                yaw_speed_rad_s=self.config.waist_yaw_speed_rad_s,
-                                yaw_accel_rad_s2=self.config.waist_yaw_accel_rad_s2,
-                                pitch_min_rad=self.config.waist_pitch_min_rad,
-                                pitch_max_rad=self.config.waist_pitch_max_rad,
-                                pitch_speed_rad_s=self.config.waist_pitch_speed_rad_s,
-                                pitch_accel_rad_s2=self.config.waist_pitch_accel_rad_s2,
-                                pitch_max_error_rad=self.config.waist_pitch_max_error_rad,
-                                pitch_stall_timeout_s=self.config.waist_pitch_stall_timeout_s,
-                                pitch_min_progress_rad=self.config.waist_pitch_min_progress_rad)
+                                yaw_limit_rad=self.body_config.waist_yaw_limit_rad,
+                                yaw_speed_rad_s=self.body_config.waist_yaw_speed_rad_s,
+                                yaw_accel_rad_s2=self.body_config.waist_yaw_accel_rad_s2,
+                                pitch_min_rad=self.body_config.waist_pitch_min_rad,
+                                pitch_max_rad=self.body_config.waist_pitch_max_rad,
+                                pitch_speed_rad_s=self.body_config.waist_pitch_speed_rad_s,
+                                pitch_accel_rad_s2=self.body_config.waist_pitch_accel_rad_s2,
+                                pitch_max_error_rad=self.body_config.waist_pitch_max_error_rad,
+                                pitch_stall_timeout_s=self.body_config.waist_pitch_stall_timeout_s,
+                                pitch_min_progress_rad=self.body_config.waist_pitch_min_progress_rad)
         self.enabled = False
         self.clutches = [None, None]
         self.home_complete = not startup_home

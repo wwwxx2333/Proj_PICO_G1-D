@@ -71,7 +71,7 @@ class RemoteBridgeTests(unittest.TestCase):
             with socket.create_connection(listener.getsockname()) as client:
                 client.sendall(b"G1D1 base 0 1\n")
                 self.assertEqual(client.recv(6), b"READY\n")
-                client.sendall(b"0.2 0 0\n")
+                client.sendall(b"1.6 0 0\n")
             worker.join(timeout=2)
 
         self.assertFalse(worker.is_alive())

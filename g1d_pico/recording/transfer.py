@@ -62,7 +62,7 @@ def read_reply(lease):
     return json.loads(line)
 
 
-def fetch(host, remote_root, remote_python, config, destination, delete_after_verify=False):
+def fetch(host, remote_root, remote_python, destination, delete_after_verify=False):
     if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.@-]*', host):
         raise ValueError('Use a hostname/IPv4 address, optionally user@host (no SSH options)')
     for executable in ('ssh', 'rsync'):
@@ -74,7 +74,7 @@ def fetch(host, remote_root, remote_python, config, destination, delete_after_ve
     destination.mkdir(parents=True, exist_ok=True)
     # No key installation/password storage. Use the user's normal SSH authentication.
     command = ('cd ' + shlex.quote(remote_root) + ' && ' + shlex.join([
-        remote_python, '-m', 'g1d_pico.recording', 'transfer-lease', '--config', config]))
+        remote_python, '-m', 'g1d_pico.recording', 'transfer-lease']))
     with FileLock(destination / '.fetch.lock'):
         lease = subprocess.Popen(['ssh', '-T', '-o', 'ConnectTimeout=10', host, command],
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)

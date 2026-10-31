@@ -12,7 +12,7 @@ import pinocchio as pin
 
 from g1d_pico import __main__ as app
 from g1d_pico.arm_bridge import ArmBridge, ArmState, parse_arm_state
-from g1d_pico.arm_config import ArmConfig
+from g1d_pico.body_config import BodyConfig
 from g1d_pico.arms import ArmSession
 from g1d_pico.control import waist_pitch_rate
 from g1d_pico.input import FreshTeleVuer, TeleVuer, StickSample, PoseSample
@@ -59,7 +59,7 @@ class PitchModeTests(unittest.TestCase):
             def get_lock(self):
                 return nullcontext()
         viewer = object.__new__(FreshTeleVuer)
-        viewer._stick_snapshot = Snapshot([0.] * 9)
+        viewer._stick_snapshot = Snapshot([0.] * 10)
         viewer._pose_snapshot = Snapshot([0.] * 37)
         event = SimpleNamespace(value={
             'left': np.eye(4).ravel(order='F'), 'right': np.eye(4).ravel(order='F'),
@@ -79,9 +79,9 @@ class PitchModeTests(unittest.TestCase):
         self.assertEqual(waist_pitch_rate(-0.1, 0.08), 0)
         for axis in (float('nan'), float('inf'), 2):
             with self.assertRaises(ValueError): waist_pitch_rate(axis, 0.08)
-        for options in ({'waist_pitch_min_rad': -0.04}, {'waist_pitch_max_rad': 2.0},
+        for options in ({'waist_pitch_min_rad': -0.05}, {'waist_pitch_max_rad': 2.4},
                         {'waist_pitch_speed_rad_s': .2}, {'waist_pitch_accel_rad_s2': float('nan')}):
-            with self.assertRaises(ValueError): ArmConfig(**options)
+            with self.assertRaises(ValueError): BodyConfig(**options)
 
     def run_app(self, rows, *, lift=True, with_arms=True, homing=False):
         now = time.monotonic()
@@ -94,12 +94,13 @@ class PitchModeTests(unittest.TestCase):
         viewer.read_poses.return_value = PoseSample(np.eye(4), np.eye(4), np.eye(4), (False, False), now, now)
         argv = ['app', '--no-camera', '--live']
         if with_arms: argv += ['--with-arms', '--skip-arm-home']
-        argv += ['--height-min-m', '0', '--height-max-m', '.42'] if lift else ['--base-only']
+        if not lift: argv += ['--base-only']
         ticks, output = [], StringIO()
         def capture(_):
             ticks.append((base.send.call_args.args[0],
                           arms.step.call_args.kwargs.copy() if arms.step.call_args else {}))
-        with patch('sys.argv', argv), patch('g1d_pico.input.FreshTeleVuer', return_value=viewer), \
+        with patch.object(app.BodyConfig, 'load', return_value=BodyConfig()), \
+             patch('sys.argv', argv), patch('g1d_pico.input.FreshTeleVuer', return_value=viewer), \
              patch('g1d_pico.arms.ArmSession', return_value=arms), \
              patch.object(app, 'AgvBridge', return_value=base), patch.object(app.time, 'sleep', side_effect=capture), \
              redirect_stdout(output):

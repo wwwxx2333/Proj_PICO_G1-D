@@ -12,17 +12,23 @@ import tempfile
 import threading
 import time
 
-from .recorder import run_worker
+from ..config_io import load_config
+from ..config_paths import PROJECT_ROOT, ARM_CONFIG, BODY_CONFIG
+from .button import RecordingRequests
+from .session import EpisodeSession
 from .storage import FileLock, sha256
 from .telemetry import Telemetry
-from .shutdown import wait_for_recorder
 
-PROJECT = Path(__file__).resolve().parents[2]
+PROJECT = PROJECT_ROOT
 CONTROL_LOCK = PROJECT / '.local/control_session.lock'
 
 
 def load_settings(path):
-    settings = json.loads(Path(path).read_text())
+    settings = load_config(path)
+    if not isinstance(settings, dict):
+        raise ValueError('Recording config must be a JSON object')
+    # Ignore only documentation; misspelled or missing settings remain errors.
+    settings.pop('_comments', None)
     expected = {'spool', 'max_cache_gb', 'min_free_gb', 'image_fps', 'cameras', 'camera_config_port'}
     if set(settings) != expected:
         raise ValueError(f'Recording config requires exactly {sorted(expected)}')
@@ -38,6 +44,8 @@ def load_settings(path):
             or len(set(cameras)) != len(cameras)
             or any(c not in ('head', 'left_wrist', 'right_wrist') for c in cameras)):
         raise ValueError('Invalid cameras list')
+    if not isinstance(settings['spool'], str) or not settings['spool'].strip():
+        raise ValueError('spool must be a non-empty path string')
     spool = Path(settings['spool']).expanduser()
     settings['spool'] = str((PROJECT / spool).resolve() if not spool.is_absolute() else spool.resolve())
     return settings
@@ -46,16 +54,18 @@ def load_settings(path):
 def code_snapshot():
     files = {}
     for folder, patterns in (('g1d_pico', ('*.py',)), ('bridge', ('*.cpp', '*.hpp')),
-                             ('config', ('*.json',)), ('deploy', ('*.sh',)),
+                             ('config', ('*.jsonc', '*.json')), ('deploy', ('*.sh',)),
                              ('assets/g1d', ('*.urdf',))):
         for pattern in patterns:
             for path in (PROJECT / folder).rglob(pattern):
                 if 'build' not in str(path.relative_to(PROJECT)):
                     files[str(path.relative_to(PROJECT))] = sha256(path)
-    arm_config = json.loads((PROJECT / 'config/arms.json').read_text())
+    arm_config = load_config(ARM_CONFIG)
+    body_config = load_config(BODY_CONFIG)
     binaries = {str(p.relative_to(PROJECT)): sha256(p)
                 for p in (PROJECT / 'bridge/build-arm64').glob('g1d_*bridge') if p.is_file()}
     return {'source_sha256': files, 'binary_sha256': binaries, 'arm_config': arm_config,
+            'body_config': body_config,
             'calibration_status': 'camera intrinsics/extrinsics and gripper TCP not supplied'}
 
 
@@ -102,8 +112,6 @@ def run(settings, command, instruction='', scene='lab', object_ids=''):
 
 def _run_locked(settings, command, instruction, scene, object_ids):
     context = mp.get_context('spawn')
-    stop = context.Event()
-    receive, send = context.Pipe(duplex=False)
     display = queue.Queue(maxsize=256)
     threading.Thread(target=display_console, args=(display,), daemon=True).start()
     def notice(text):
@@ -124,36 +132,23 @@ def _run_locked(settings, command, instruction, scene, object_ids):
                                  'Command submission / DDS Write is not proof of physical execution'])
     with tempfile.TemporaryDirectory(prefix='g1d-record-') as temporary:
         address = str(Path(temporary) / 'telemetry.sock')
-        worker = context.Process(target=run_worker, args=(settings, metadata, address, send, stop),
-                                 name='g1d-recorder')
-        worker.start()
-        send.close()
-        child = None
-        sink = None
-        reader = None
+        requests = RecordingRequests(Path(temporary) / 'control.sock')
+        session = EpisodeSession(context, settings, metadata, address, notice)
+        child = sink = reader = None
         previous = {}
         result = 1
-        first = None
-        finalizing = False
-        abort_finalization = False
+        finalizing = abort_finalization = False
         control_interrupts = 0
         recording_finished = False
         try:
-            if not receive.poll(15):
-                raise RuntimeError('Recorder startup timed out; control was not started')
-            first = receive.recv()
-            if first.get('state') != 'ready':
-                raise RuntimeError(f'Recorder startup failed: {first}')
-            notice(f"RECORDING: {first['episode']}\nLocal cache only; no upload during control.")
             environment = os.environ.copy()
             environment['G1D_RECORD_SOCKET'] = address
+            environment['G1D_RECORD_CONTROL_SOCKET'] = str(requests.path)
             environment['PYTHONUNBUFFERED'] = '1'
             sink = Telemetry(address)
             child = subprocess.Popen(command, cwd=PROJECT, env=environment,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                      start_new_session=True, bufsize=0)
-            # First interrupt follows the normal Ctrl+C path. A second is allowed
-            # to escalate only at the operator's explicit request.
             def forward(signum, _frame):
                 nonlocal abort_finalization, control_interrupts
                 if finalizing:
@@ -163,8 +158,6 @@ def _run_locked(settings, command, instruction, scene, object_ids):
                     try:
                         control_interrupts += 1
                         if control_interrupts == 1:
-                            # Launch scripts exec Python. Let the parent stop its
-                            # bridges in order before escalating to the group.
                             child.send_signal(signal.SIGINT)
                         else:
                             notice('Repeated interrupt: escalating control shutdown to the process group.')
@@ -175,27 +168,17 @@ def _run_locked(settings, command, instruction, scene, object_ids):
                 previous[signum] = signal.signal(signum, forward)
             reader = threading.Thread(target=drain_console, args=(child.stdout, sink, display), daemon=True)
             reader.start()
-            worker_failed_reported = False
+            session.waiting_notice()
             while child.poll() is None:
-                if receive.poll(0.1):
-                    try:
-                        message = receive.recv()
-                    except EOFError:
-                        message = None
-                    if message:
-                        if message['state'] in ('stopped', 'error'):
-                            notice(f'RECORDING STOPPED: {message}. Robot control continues; no automatic restart.')
-                        elif message['state'] == 'progress':
-                            notice('RECORDER ' + json.dumps(message, ensure_ascii=False))
-                if not worker.is_alive() and not worker_failed_reported:
-                    notice('RECORDING STOPPED: worker exited. Robot control continues.')
-                    worker_failed_reported = True
-                    time.sleep(0.05)
+                # Poll requests BEFORE reaping: a press arriving during saving is
+                # rejected as busy, never turned into a delayed start afterward.
+                requests.poll(session.toggle)
+                session.poll()
+                time.sleep(.05)
             result = child.wait()
             reader.join(timeout=3)
             sink.emit('session_end', {'control_exit_code': result})
         finally:
-            # Only this cleanup, after the controlled process exits, waits for disk flush.
             if child is not None and child.poll() is None:
                 child.send_signal(signal.SIGINT)
                 try:
@@ -210,17 +193,13 @@ def _run_locked(settings, command, instruction, scene, object_ids):
             if reader is not None:
                 reader.join(timeout=3)
             finalizing = True
-            stop.set()
-            notice('Control ended. Finalizing local recording; wait for state=finished. '
-                   'Ctrl+C now cancels finalization and preserves recovery data.')
-            recording_finished = wait_for_recorder(worker, receive, notice,
-                                                   lambda: abort_finalization)
+            notice('Control ended. 正在等待当前录制收尾；此时再次 Ctrl+C 会中断保存并保留恢复数据。')
+            recording_finished = session.finish_control(lambda: abort_finalization)
             if sink:
                 sink.close()
-            receive.close()
+            requests.close()
             for signum, handler in previous.items():
                 signal.signal(signum, handler)
-            if first and first.get('episode'):
-                notice(f"Recording directory: {first['episode']}\nRun host fetch only after control has ended.")
-            time.sleep(0.1)  # Allow final terminal notices; never in control loop.
+            notice('REC SESSION_END 录制会话结束；可在主机拉取已保存的任务。')
+            time.sleep(.1)
         return result if result else (0 if recording_finished else 2)

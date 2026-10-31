@@ -11,7 +11,7 @@ import sys
 import tempfile
 import unittest
 
-from g1d_pico.recording.runner import CONTROL_LOCK
+from project_fixture import copy_runtime_project
 from g1d_pico.recording.storage import EpisodeStore, FileLock, verify_episode
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -38,8 +38,9 @@ class TransferTests(unittest.TestCase):
         fake_rsync.chmod(0o755)
         self.spool = self.root/'robot_spool'
         self.destination = self.root/'host_dataset'
-        self.config = self.root/'recording.json'
-        self.config.write_text(json.dumps(dict(spool=str(self.spool), max_cache_gb=.02,
+        self.project = copy_runtime_project(self.root / 'remote_project')
+        self.config = self.project/'config/recording.jsonc'
+        self.config.write_text('// JSONC transfer fixture\n' + json.dumps(dict(spool=str(self.spool), max_cache_gb=.02,
             min_free_gb=0, image_fps=20, cameras=[], camera_config_port=60000)))
         self.environment = os.environ.copy()
         self.environment['PATH'] = str(self.bin) + os.pathsep + self.environment['PATH']
@@ -55,8 +56,8 @@ class TransferTests(unittest.TestCase):
 
     def fetch(self, delete=False):
         args = [sys.executable, '-m', 'g1d_pico.recording', 'fetch', '--host', 'fake-PC2',
-                '--remote-root', str(PROJECT), '--remote-python', sys.executable,
-                '--config', str(self.config), '--destination', str(self.destination)]
+                '--remote-root', str(self.project), '--remote-python', sys.executable,
+                '--destination', str(self.destination)]
         if delete: args.append('--delete-after-verify')
         return subprocess.run(args, cwd=PROJECT, env=self.environment, capture_output=True,
                               text=True, timeout=20)
@@ -87,7 +88,7 @@ class TransferTests(unittest.TestCase):
 
     def test_transfer_refused_while_control_is_active(self):
         original = self.episode()
-        with FileLock(CONTROL_LOCK, shared=True):
+        with FileLock(self.project / '.local/control_session.lock', shared=True):
             result = self.fetch(delete=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(original.exists())

@@ -58,6 +58,23 @@ class ShutdownTests(unittest.TestCase):
         self.assertFalse(wait_for_recorder(worker, EofPipe(), lambda text: None, lambda: True))
         self.assertTrue(worker.terminated)
 
+    def test_already_observed_finished_status_is_preserved(self):
+        worker = FakeWorker(alive_calls=0)
+        self.assertTrue(wait_for_recorder(worker, EofPipe(), lambda text: None,
+                                         lambda: False, finished=True))
+
+    def test_write_failure_during_exit_is_not_reported_as_saved(self):
+        class StatusPipe:
+            messages = [{'state': 'stopped', 'reason': 'WRITE_ERROR'},
+                        {'state': 'finished', 'reason': 'WRITE_ERROR'}]
+            def poll(self, *args): return bool(self.messages)
+            def recv(self): return self.messages.pop(0)
+        observed = []
+        self.assertFalse(wait_for_recorder(
+            FakeWorker(alive_calls=0), StatusPipe(), lambda text: None,
+            lambda: False, on_message=observed.append))
+        self.assertEqual(len(observed), 2)
+
     def test_progressing_real_process_survives_more_than_thirty_seconds(self):
         with tempfile.TemporaryDirectory() as root:
             context = mp.get_context('spawn')

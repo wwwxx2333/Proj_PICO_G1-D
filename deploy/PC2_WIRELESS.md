@@ -74,14 +74,12 @@ python -m g1d_pico --live --base-only \
   --remote-bridge-port 8765
 ```
 
-若有线真机模式中的升降软件边界已经核实，可沿用**同一组** `rt/hispeed_state.y` 上下限启用双摇杆；整机高度 `1.26–1.68 m` 不是这两个参数的坐标：
+若有线真机模式中的升降软件边界已经核实，先将**同一组** `rt/hispeed_state.y` 上下限写入运行端 `config/body.jsonc` 的 `height_min_m` / `height_max_m`，再启用双摇杆；整机高度 `1.26–1.68 m` 不是这两个参数的坐标：
 
 ```bash
 python -m g1d_pico --live \
   --robot-ip 192.168.1.118 \
-  --remote-bridge-port 8765 \
-  --height-min-m <已核实的反馈下限> \
-  --height-max-m <已核实的反馈上限>
+  --remote-bridge-port 8765
 ```
 
 PICO 继续访问**实验电脑**上的 TeleVuer 地址，例如 `https://vuer.ai?ws=wss://192.168.1.150:8012`；不用连接 PC2 的 `8012`。每次启动两根摇杆先回中，右手 A 使能，右手 B 解除使能。机器人周围保持空旷、原装遥控器在手边；不要同时运行旧的有线真机进程或其他底盘/升降控制程序。

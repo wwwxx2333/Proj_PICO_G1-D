@@ -21,6 +21,7 @@ class StickSample:
     received_at: float
     home_button: bool = False
     mode_button: bool = False
+    record_button: bool = False  # Physical left thumbstick press (L3), not touch.
 
     def is_fresh(self, now: float, timeout_s: float) -> bool:
         return self.received_at > 0.0 and 0.0 <= now - self.received_at <= timeout_s
@@ -59,7 +60,7 @@ class FreshTeleVuer(TeleVuer):
 
     def __init__(self, **kwargs):
         # Must exist before TeleVuer starts its child process.
-        self._stick_snapshot = Array("d", 9, lock=True)
+        self._stick_snapshot = Array("d", 10, lock=True)
         self._pose_snapshot = Array("d", 37, lock=True)
         self._head_snapshot = Array("d", 17, lock=True)
         super().__init__(use_hand_tracking=False, **kwargs)
@@ -86,11 +87,12 @@ class FreshTeleVuer(TeleVuer):
             left_state = event.value["leftState"]
             home = bool(left_state.get("yButton", left_state.get("bButton", False)))
             mode = bool(left_state.get("xButton", left_state.get("aButton", False)))
+            record = bool(left_state.get("thumbstick", False))
         except (KeyError, TypeError, ValueError, IndexError):
             return
         await super().on_controller_move(event, session, fps=fps)
         with self._stick_snapshot.get_lock():
-            self._stick_snapshot[:] = [*axes, float(start), float(stop), time.monotonic(), float(home), float(mode)]
+            self._stick_snapshot[:] = [*axes, float(start), float(stop), time.monotonic(), float(home), float(mode), float(record)]
         try:
             left_pose = rigid_pose(np.asarray(event.value["left"]).reshape(4, 4, order="F"))
             right_pose = rigid_pose(np.asarray(event.value["right"]).reshape(4, 4, order="F"))
@@ -106,8 +108,8 @@ class FreshTeleVuer(TeleVuer):
 
     def read_sticks(self) -> StickSample:
         with self._stick_snapshot.get_lock():
-            lx, ly, rx, ry, start, stop, timestamp, home, mode = self._stick_snapshot[:]
-        return StickSample(lx, ly, rx, ry, bool(start), bool(stop), timestamp, bool(home), bool(mode))
+            lx, ly, rx, ry, start, stop, timestamp, home, mode, record = self._stick_snapshot[:]
+        return StickSample(lx, ly, rx, ry, bool(start), bool(stop), timestamp, bool(home), bool(mode), bool(record))
 
     def read_poses(self) -> PoseSample:
         with self._pose_snapshot.get_lock():

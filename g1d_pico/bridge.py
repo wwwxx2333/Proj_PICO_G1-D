@@ -6,6 +6,7 @@ import socket
 import subprocess
 
 from .control import MotionCommand
+from .bridge_contract import require_current_limits
 
 
 class AgvBridge:
@@ -28,6 +29,7 @@ class AgvBridge:
                 part for part in (str(runtime_lib), environment.get("LD_LIBRARY_PATH", "")) if part
             )
         limits = (height_min_m, height_max_m) if mode != "base" else (0.0, 1.0)
+        require_current_limits(binary, environment)
         self._process = subprocess.Popen(
             [str(binary), network_interface, str(limits[0]), str(limits[1]), mode],
             stdin=subprocess.PIPE,

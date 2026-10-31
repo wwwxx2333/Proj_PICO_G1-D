@@ -22,7 +22,7 @@ class HandsTests(unittest.TestCase):
         class Snapshot(list):
             def get_lock(self): return nullcontext()
         viewer=object.__new__(FreshTeleVuer)
-        viewer._stick_snapshot=Snapshot([0.]*8)
+        viewer._stick_snapshot=Snapshot([0.]*10)
         viewer._pose_snapshot=Snapshot([0.]*37)
         viewer._head_snapshot=Snapshot([0.]*17)
         event=SimpleNamespace(value={

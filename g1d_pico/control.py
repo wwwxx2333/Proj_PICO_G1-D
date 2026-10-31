@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import math
+from .limits import AGV_FORWARD_MPS, AGV_YAW_RPS, LIFT_NORMALIZED
 
 
 @dataclass(frozen=True)
@@ -19,14 +20,18 @@ class MappingConfig:
     max_lift_normalized: float = 0.15
 
     def __post_init__(self) -> None:
+        for name in ('deadzone', 'max_forward_mps', 'max_yaw_rps', 'max_lift_normalized'):
+            value = getattr(self, name)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value)):
+                raise ValueError(f'{name} must be a finite number')
         if not 0.0 <= self.deadzone < 1.0:
             raise ValueError("deadzone must be in [0, 1)")
-        if not 0.0 < self.max_forward_mps <= 0.10:
-            raise ValueError("max_forward_mps must be in (0, 0.10]")
-        if not 0.0 < self.max_yaw_rps <= 0.15:
-            raise ValueError("max_yaw_rps must be in (0, 0.15]")
-        if not 0.0 < self.max_lift_normalized <= 0.15:
-            raise ValueError("max_lift_normalized must be in (0, 0.15]")
+        for name, maximum in (('max_forward_mps', AGV_FORWARD_MPS),
+                              ('max_yaw_rps', AGV_YAW_RPS),
+                              ('max_lift_normalized', LIFT_NORMALIZED)):
+            if not 0 <= getattr(self, name) <= maximum:
+                raise ValueError(f'{name} must be within [0, {maximum}] (official SDK2 bound)')
 
 
 def _axis(value: float, deadzone: float) -> float:

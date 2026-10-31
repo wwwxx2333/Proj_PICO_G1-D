@@ -13,11 +13,45 @@ import unittest
 
 import zmq
 
+from project_fixture import copy_runtime_project
+
 from g1d_pico.recording.recorder import CAMERAS, run_worker
 from g1d_pico.recording.storage import verify_episode
 from g1d_pico.recording.telemetry import Telemetry
 
 PROJECT = Path(__file__).resolve().parents[1]
+
+# Synthetic operator for subprocess tests: local sockets only, no PICO or DDS.
+CONTROL_HELPER = r"""
+import json, os, pathlib, socket, time, uuid
+from g1d_pico.recording.telemetry import emit
+from g1d_pico.recording.runner import load_settings
+from g1d_pico.config_paths import RECORDING_CONFIG
+spool = pathlib.Path(load_settings(RECORDING_CONFIG)['spool'])
+def wait_until(predicate, timeout=10):
+    end = time.monotonic()+timeout
+    while not predicate():
+        if time.monotonic()>end: raise RuntimeError('fixture wait timed out')
+        time.sleep(.02)
+def record_toggle(identity=None):
+    address = os.environ['G1D_RECORD_CONTROL_SOCKET']
+    local = str(pathlib.Path(address).parent / ('test-'+uuid.uuid4().hex[:8]+'.sock'))
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    client.bind(local)
+    client.settimeout(3)
+    try:
+        client.sendto(json.dumps({'op':'toggle','id':identity or uuid.uuid4().hex,
+                                  'time':time.monotonic()}).encode(), address)
+        return json.loads(client.recv(4096))['result']
+    finally:
+        client.close()
+        pathlib.Path(local).unlink(missing_ok=True)
+def start_recording():
+    assert record_toggle() == 'starting'
+    wait_until(lambda: pathlib.Path(os.environ['G1D_RECORD_SOCKET']).exists())
+    time.sleep(.1)
+"""
+
 
 
 class FakeCameras:
@@ -61,6 +95,7 @@ class IntegrationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='record-test-')
         self.root = Path(self.temp.name)
+        self.project = copy_runtime_project(self.root / 'project')
 
     def tearDown(self):
         self.temp.cleanup()
@@ -107,12 +142,13 @@ class IntegrationTests(unittest.TestCase):
             receive.close()
             cameras.close()
 
-    def run_supervisor(self, settings, script):
-        config = self.root/'recording.json'
-        config.write_text(json.dumps(settings))
-        return subprocess.run([sys.executable, '-m', 'g1d_pico.recording', 'run', '--config', str(config),
-                               '--instruction', 'offline test', '--', sys.executable, '-u', '-c', script],
-                              cwd=PROJECT, capture_output=True, text=True, timeout=25)
+    def run_supervisor(self, settings, script, start=True):
+        config = self.project/'config/recording.jsonc'
+        config.write_text('// JSONC recording fixture\n' + json.dumps(settings))
+        return subprocess.run([sys.executable, '-m', 'g1d_pico.recording', 'run',
+                               '--instruction', 'offline test', '--', sys.executable, '-u', '-c',
+                               CONTROL_HELPER + ('start_recording()\n' if start else '') + script],
+                              cwd=self.project, capture_output=True, text=True, timeout=25)
 
     def test_supervisor_captures_console_exit_code_and_does_not_upload(self):
         result = self.run_supervisor(self.settings([], 60000),
@@ -141,11 +177,11 @@ class IntegrationTests(unittest.TestCase):
             cameras.close()
 
     def test_sigint_flushes_recording_after_control_exits(self):
-        config = self.root/'recording.json'
-        config.write_text(json.dumps(self.settings([], 60000)))
-        script = "import time; print('CONTROL_READY', flush=True); time.sleep(20)"
-        proc = subprocess.Popen([sys.executable, '-u', '-m', 'g1d_pico.recording', 'run', '--config', str(config),
-                                '--', sys.executable, '-u', '-c', script], cwd=PROJECT,
+        config = self.project/'config/recording.jsonc'
+        config.write_text('// JSONC recording fixture\n' + json.dumps(self.settings([], 60000)))
+        script = CONTROL_HELPER + "start_recording()\nprint('CONTROL_READY', flush=True); time.sleep(20)"
+        proc = subprocess.Popen([sys.executable, '-u', '-m', 'g1d_pico.recording', 'run',
+                                '--', sys.executable, '-u', '-c', script], cwd=self.project,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         try:
             for _ in range(20):
@@ -163,19 +199,19 @@ class IntegrationTests(unittest.TestCase):
             proc.stdout.close()
 
     def test_first_interrupt_reaches_parent_before_its_bridge_child(self):
-        config = self.root/'recording.json'
-        config.write_text(json.dumps(self.settings([], 60000)))
+        config = self.project/'config/recording.jsonc'
+        config.write_text('// JSONC recording fixture\n' + json.dumps(self.settings([], 60000)))
         marker = self.root/'bridge_received_sigint'
         bridge_script = ("import signal,time,pathlib; "
                          f"signal.signal(signal.SIGINT,lambda *a:pathlib.Path({str(marker)!r}).write_text('bad')); "
                          "print('BRIDGE_READY',flush=True); time.sleep(20)")
-        script = ("import subprocess,sys,time\n"
+        script = CONTROL_HELPER + "start_recording()\n" + ("import subprocess,sys,time\n"
                   f"p=subprocess.Popen([sys.executable,'-u','-c',{bridge_script!r}])\n"
                   "try:\n time.sleep(20)\n"
                   "except KeyboardInterrupt:\n p.terminate(); p.wait(); print('ORDERLY_PARENT_STOP',flush=True)\n")
         proc = subprocess.Popen([sys.executable, '-u', '-m', 'g1d_pico.recording', 'run',
-                                 '--config', str(config), '--', sys.executable, '-u', '-c', script],
-                                cwd=PROJECT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                                 '--', sys.executable, '-u', '-c', script],
+                                cwd=self.project, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         try:
             for _ in range(20):
                 if 'BRIDGE_READY' in proc.stdout.readline(): break
@@ -192,6 +228,75 @@ class IntegrationTests(unittest.TestCase):
                 proc.kill()
                 proc.wait()
             proc.stdout.close()
+
+    def test_no_l3_creates_no_episode_even_when_a_b_events_are_received(self):
+        result = self.run_supervisor(self.settings([], 60000),
+            "emit('control_cycle', {'armed': True}); print('NO_RECORDING'); "
+            "emit('control_cycle', {'armed': False})", start=False)
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+        self.assertIn('REC WAITING', result.stdout)
+        self.assertEqual(list((self.root/'spool').glob('episode_*')), [])
+
+    def test_two_manual_episodes_exclude_idle_and_reject_duplicate_request(self):
+        script = r"""
+print('IDLE_BEFORE', flush=True)
+start_recording()
+emit('control_cycle', {'armed': True})
+print('FIRST_EPISODE', flush=True)
+time.sleep(.2)
+emit('control_cycle', {'armed': False})
+print('B_DOES_NOT_STOP_RECORDING', flush=True)
+time.sleep(.15)
+identity = uuid.uuid4().hex
+assert record_toggle(identity) == 'saving'
+assert record_toggle(identity) == 'saving'
+wait_until(lambda: len(list(spool.glob('episode_*/manifest.json'))) == 1)
+wait_until(lambda: not pathlib.Path(os.environ['G1D_RECORD_SOCKET']).exists())
+print('IDLE_BETWEEN', flush=True)
+time.sleep(.3)
+start_recording()
+print('SECOND_EPISODE', flush=True)
+emit('control_cycle', {'armed': True})
+time.sleep(.2)
+assert record_toggle() == 'saving'
+wait_until(lambda: len(list(spool.glob('episode_*/manifest.json'))) == 2)
+wait_until(lambda: not pathlib.Path(os.environ['G1D_RECORD_SOCKET']).exists())
+print('CONTROL_STILL_ALIVE', flush=True)
+time.sleep(.2)
+"""
+        result = self.run_supervisor(self.settings([], 60000), script, start=False)
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+        episodes = sorted((self.root/'spool').glob('episode_*'))
+        self.assertEqual(len(episodes), 2)
+        logs = []
+        for episode in episodes:
+            manifest = verify_episode(episode)
+            self.assertEqual(manifest['recording_stop_reason'], 'L3_STOP')
+            self.assertEqual(sum(manifest['sequence_gaps'].values()), 0)
+            logs.append((episode/'console.log').read_text())
+            metadata = json.loads((episode/'metadata.json').read_text())
+            rows = [json.loads(line) for line in (episode/'telemetry.jsonl').read_text().splitlines()]
+            self.assertTrue(all(metadata['recording_started_monotonic_s'] <= row['emitted_monotonic_s']
+                                <= manifest['recording_requested_stop_monotonic_s'] for row in rows))
+        self.assertIn('FIRST_EPISODE', logs[0])
+        self.assertIn('B_DOES_NOT_STOP_RECORDING', logs[0])
+        self.assertIn('SECOND_EPISODE', logs[1])
+        self.assertNotIn('IDLE_', ''.join(logs))
+        self.assertIn('CONTROL_STILL_ALIVE', result.stdout)
+        self.assertEqual(result.stdout.count('REC SAVED'), 2)
+
+    def test_start_failure_does_not_exit_control(self):
+        script = "assert record_toggle() == 'starting'\ntime.sleep(.6)\nprint('CONTROL_SURVIVED_FULL_CACHE')"
+        settings = self.settings([], 60000, .01)
+        (self.root/'spool').mkdir()
+        (self.root/'spool'/'existing.bin').write_bytes(b'x'*10_000_000)
+        result = self.run_supervisor(settings, script, start=False)
+        self.assertIn('CONTROL_SURVIVED_FULL_CACHE', result.stdout)
+        self.assertIn('CACHE_LIMIT', result.stdout)
+        self.assertIn('REC ERROR', result.stdout)
+        self.assertNotEqual(result.returncode, 0)  # The failed recording is not silently successful.
+        self.assertEqual(list((self.root/'spool').glob('episode_*')), [])
+
 
 
 if __name__ == '__main__':
