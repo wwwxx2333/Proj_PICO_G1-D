@@ -2,12 +2,15 @@
 # PC2 camera+base+arms+waist+column lift. Dex3-1 hands remain optional.
 set -euo pipefail
 project_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$project_root/deploy/runtime_logging.sh"
+g1d_start_runtime_log "$project_root/deploy/run_pc2_arms.sh" "$@"
 with_hands=false
 with_lift=true
 # All tuning values come from the project config files.
 extra=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --full-log) shift ;; # Consumed by the outer logging supervisor.
         --with-hands) with_hands=true; shift ;;
         --skip-home) export PICO_G1D_SKIP_ARM_HOME=1; shift ;;
         --with-lift) with_lift=true; shift ;;
@@ -18,6 +21,7 @@ while [[ $# -gt 0 ]]; do
         --help)
             echo "Usage: bash deploy/run_pc2_arms.sh [--with-hands] [--skip-home]"
             echo "       [--without-lift | --with-lift]"
+            echo "       [--full-log]  Show all logs; full runtime file is always saved."
             echo "Settings: project config/body.jsonc and config/arms.jsonc (no CLI overrides)."
             echo "Right stick horizontal: waist yaw. Vertical: lift (default) or torso pitch."
             echo "Left controller X toggles LIFT/PITCH; centre the right stick after switching."

@@ -8,4 +8,6 @@ def copy_runtime_project(destination):
     for name in ('g1d_pico', 'config'):
         shutil.copytree(source / name, destination / name,
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    shutil.copytree(source / 'assets/g1d', destination / 'assets/g1d',
+                    ignore=shutil.ignore_patterns('*.STL', '*.stl', '*.dae', '*.obj'))
     return destination

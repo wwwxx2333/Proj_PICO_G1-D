@@ -5,6 +5,7 @@ from dataclasses import asdict
 import math
 from pathlib import Path
 import time
+import sys
 
 from .bridge import AgvBridge, RemoteAgvBridge
 from .arm_config import ArmConfig
@@ -22,6 +23,7 @@ def parse_args() -> argparse.Namespace:
         description=__doc__, allow_abbrev=False,
         epilog="Tuning is always read from project config/body.jsonc and config/arms.jsonc; "
                "edit those files and restart. CLI tuning overrides are not supported.")
+    parser.add_argument("--full-log", action="store_true", help="Show all runtime logs; file logging is always complete")
     parser.add_argument("--robot-ip", default="192.168.123.164", help="G1-D PC2 camera server")
     parser.add_argument("--cert", help="TeleVuer HTTPS certificate (or XR_TELEOP_CERT)")
     parser.add_argument("--key", help="TeleVuer HTTPS private key (or XR_TELEOP_KEY)")
@@ -184,7 +186,6 @@ def _run_control() -> None:
                     viewer.render_to_xr(frame)
 
             sample = viewer.read_sticks()
-            recording_button.step(sample, config.deadzone)
             poses = viewer.read_poses() if arms is not None else None
             fresh = sample.is_fresh(time.monotonic(), timeout_s=0.25)
             if (arms is not None and fresh and sample.home_button and not previous_y
@@ -305,6 +306,10 @@ def _run_control() -> None:
 
             if bridge is not None:
                 bridge.send(command)
+            recording_button.step(
+                sample, control_ready=arms is None or arms.home_complete,
+                preparation='' if arms is None or arms.home_complete else
+                f'手臂启动归位尚未完成：{arms.status}')
             emit("control_cycle", {
                 "cycle_start_monotonic_s": cycle_start,
                 "sticks": sample, "pico_poses": poses,
@@ -382,4 +387,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    from .runtime_logging import active
+    if not active() and sys.argv[1:2] != ['--help']:
+        from .runtime_logging.runner import run_logged
+        raise SystemExit(run_logged([sys.executable, '-u', '-m', 'g1d_pico', *sys.argv[1:]]))
     main()

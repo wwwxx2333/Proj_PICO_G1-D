@@ -9,3 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BODY_CONFIG = PROJECT_ROOT / 'config/body.jsonc'
 ARM_CONFIG = PROJECT_ROOT / 'config/arms.jsonc'
 RECORDING_CONFIG = PROJECT_ROOT / 'config/recording.jsonc'
+
+LOGGING_CONFIG = PROJECT_ROOT / 'config/logging.jsonc'
+DATASET_CONFIG = PROJECT_ROOT / 'config/dataset.jsonc'
+CALIBRATION_CONFIG = PROJECT_ROOT / 'config/calibration.jsonc'

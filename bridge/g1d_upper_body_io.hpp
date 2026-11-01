@@ -20,10 +20,13 @@ struct ArmFeedback {
     uint8_t mode = 0;
     Joints q{};
     double yaw = 0;
+    Joints dq{}, tau_est{}; // Recording only; never used for control acceptance.
+    double yaw_dq = 0, yaw_tau_est = 0;
 };
 struct PitchFeedback {
     double received_at = 0; // Updated only by a valid dedicated pitch sample.
     double q = 0;
+    double dq = 0, tau_est = 0; // Vendor feedback, not commanded feedforward.
 };
 struct UpperBodyFeedback {
     ArmFeedback arm;
@@ -55,9 +58,13 @@ inline bool DecodeArmState(const unitree_hg::msg::dds_::LowState_& state,
     next.received_at = now;
     next.mode = state.mode_machine();
     next.yaw = state.motor_state()[12].q();
+    next.yaw_dq = state.motor_state()[12].dq();
+    next.yaw_tau_est = state.motor_state()[12].tau_est();
     if (!std::isfinite(next.yaw)) return false;
     for (size_t i = 0; i < next.q.size(); ++i) {
         next.q[i] = state.motor_state()[15+i].q();
+        next.dq[i] = state.motor_state()[15+i].dq();
+        next.tau_est[i] = state.motor_state()[15+i].tau_est();
         if (!std::isfinite(next.q[i])) return false;
     }
     // lowstate[14] is intentionally not used as G1-D pitch feedback.
@@ -68,7 +75,7 @@ inline bool DecodeArmState(const unitree_hg::msg::dds_::LowState_& state,
 inline bool DecodePitchState(const unitree_hg::msg::dds_::MotorState_& state,
                              double now, PitchFeedback& output) {
     if (!std::isfinite(state.q())) return false;
-    output = {now, state.q()};
+    output = {now, state.q(), state.dq(), state.tau_est()};
     return true;
 }
 

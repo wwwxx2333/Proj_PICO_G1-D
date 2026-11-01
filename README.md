@@ -37,7 +37,7 @@ bash deploy/record_pc2.sh \
   -- --with-hands
 ```
 
-启动后为 `REC WAITING`，尚未保存任务。左摇杆回中并长按按压键 L3 约 1 秒开始录制，再次长按结束本条；看到 `REC SAVED` 后可继续采集下一条，无需重启。每次触发后需松开 L3。A/B 不切换录制；等待和保存期间不录制新的任务数据。右 A 接管，右 B 停止操作；左 X 切换右摇杆纵轴的升降/俯仰；左 Y 请求双臂归位。左右侧握控制对应手臂，左右食指扳机控制手部。完整按键和恢复条件见 [项目说明](PROJECT_GUIDE.md)。
+启动时先初始化控制、等待 PICO 就绪并完成双臂归位，同时预热录制进程和相机连接；不保存任务数据。看到 `REC READY` 后按一下左摇杆按压键 L3 开始录制，松开后再次长按约 1 秒结束本条；无需摇杆回中。看到 `REC SAVED` 后会预热下一条，等 `REC READY` 即可继续，无需重启。L3 不触发归位或运动接管；同一次按住不会先开始又结束。A/B 不切换录制；等待和保存期间不录制新的任务数据。右 A 接管，右 B 停止操作；左 X 切换右摇杆纵轴的升降/俯仰；左 Y 请求双臂归位。左右侧握控制对应手臂，左右食指扳机控制手部。完整按键和恢复条件见 [项目说明](PROJECT_GUIDE.md)。
 
 单条任务结束后按 B 停止操作，再长按 L3 并等待 `REC SAVED`。全部任务完成后在 PC2 终端按一次 Ctrl+C，等待收尾及终端提示符返回，再到 **主机** 拉取：
 
@@ -45,11 +45,37 @@ bash deploy/record_pc2.sh \
 cd /home/lab209/Proj/Proj_PICO_G1-D
 bash deploy/fetch_pc2_recordings.sh \
   --host unitree@192.168.1.118 \
-  --destination /home/lab209/Datasets/G1D_Lab \
+  --destination /home/lab209/Datasets/G1D_Lab/raw \
   --delete-after-verify
 ```
 
 只有内容校验通过的完整任务才会按该选项删除 PC2 源缓存。去掉 `--delete-after-verify` 可保留源数据；未完成目录按 [恢复说明](deploy/PC2_RECORDING_RECOVERY.md) 处理。
+
+fetch 现在复用单条 SSH 连接：正确认证一次后，本轮各条传输不再重复询问密码。加 `--with-video` 可在拉取结束后由主机生成三路拼接 MP4，默认放入 `G1D_Lab/videos/<episode_id>/overview.mp4`，原始数据不变。已经拉取的任务可单独转换：
+
+```bash
+bash deploy/make_recording_video.sh \
+  /home/lab209/Datasets/G1D_Lab/raw/episode_* \
+  --output-root /home/lab209/Datasets/G1D_Lab/videos
+```
+
+命令、视频时间对齐和缺帧提示见 [主机传输与 MP4 回看](deploy/HOST_VIDEO.md)。这次功能只更新主机，无需 PC2 编译。
+
+## 自动运行日志
+
+以上三个 PC2 启动入口都会自动保存完整运行日志，无需手动 `tee`：
+`logs/runtime/run_YYYYMMDD_HHMMSS_微秒_随机编号.log`，最多保留 100 份，启动时淘汰最旧的已关闭日志。
+一份日志包含本次启动检查、等待、控制、各条录制与退出保存；终端启动时会打印完整路径。
+默认终端只显示必要状态和错误；加 `--full-log` 显示全部：
+
+```bash
+bash deploy/run_pc2_arms.sh --with-hands --full-log
+# 或控制并录制，--full-log 放在分隔符 -- 前
+bash deploy/record_pc2.sh --full-log \
+  --instruction "实验室导航与取放物体" --scene lab209 -- --with-hands
+```
+
+运行日志与 episode 的 `logs/console.log`（旧 v1 为根目录 console.log） 分开，完整文件不受终端显示模式影响。运行日志不计入录制缓存额度，也不会由 fetch 自动传回主机。配置、故障提示及本次同步命令见 [运行日志说明](deploy/RUNTIME_LOGGING.md)。运行日志功能本身只涉及 Python；当前训练数据 v2 的关节动态反馈升级需重新编译 C++。
 
 ## 配置与编译
 
@@ -58,12 +84,15 @@ bash deploy/fetch_pc2_recordings.sh \
 | [body.jsonc](config/body.jsonc) | 底盘、立柱、腰部转动、俯仰和保护参数 |
 | [arms.jsonc](config/arms.jsonc) | 双臂跟随、归位、手柄映射和 IK 滤波 |
 | [recording.jsonc](config/recording.jsonc) | PC2 缓存配额、相机列表和保存帧率 |
+| [dataset.jsonc](config/dataset.jsonc) | 采集标识、数据质量阈值、主机离线导出参数 |
+| [calibration.jsonc](config/calibration.jsonc) | 相机/TCP 标定模板，未测数据保持 null |
+| [logging.jsonc](config/logging.jsonc) | 自动运行日志路径、数量上限、刷新与提示间隔 |
 
-配置支持 `//` 行注释。程序固定读取运行端项目内的 `config/body.jsonc`、`config/arms.jsonc` 和 `config/recording.jsonc`（按所启用功能加载）。不再接受配置路径选项或速度、死区、高度的命令行覆盖；双臂/身体缺省字段仍使用代码默认值，缺少配置文件或非法值会报错。实际读取 PC2 文件，修改后重启生效。只改合法配置值不需要编译。
+配置支持 `//` 行注释。录制另固定读取 `config/dataset.jsonc` 与 `config/calibration.jsonc`，详见 [训练数据结构与使用](deploy/TRAINING_DATA.md)。程序固定读取运行端项目内的 `config/body.jsonc`、`config/arms.jsonc`、`config/recording.jsonc` 和 `config/logging.jsonc`（按所启用功能加载）。不再接受配置路径选项或速度、死区、高度的命令行覆盖；双臂/身体缺省字段仍使用代码默认值，缺少配置文件或非法值会报错。实际读取 PC2 文件，修改后重启生效。只改合法配置值不需要编译。
 
 保留的功能开关、任务参数与本次同步步骤见 [启动选项](deploy/RUN_OPTIONS.md)。
 
-**2026-10-30 的官方范围对齐更新涉及 C++，同步后需重新编译一次：**
+**关节动态反馈记录与此前官方范围升级涉及 C++，同步后需在 PC2 编译：**
 
 ```bash
 cd /home/unitree/Proj/Proj_PICO_G1-D
@@ -76,6 +105,7 @@ bash deploy/build_on_pc2.sh deps/unitree_sdk2
 
 | 内容 | 文档 |
 |---|---|
+| 自动运行日志与终端显示 | [RUNTIME_LOGGING.md](deploy/RUNTIME_LOGGING.md) |
 | 启动选项与固定配置 | [RUN_OPTIONS.md](deploy/RUN_OPTIONS.md) |
 | 项目架构与代码导读 | [PROJECT_GUIDE.md](PROJECT_GUIDE.md) |
 | 初始 PC2 环境 | [PC2_DIRECT.md](deploy/PC2_DIRECT.md) |
@@ -84,6 +114,7 @@ bash deploy/build_on_pc2.sh deps/unitree_sdk2
 | 速度和映射调参 | [ARM_TUNING.md](deploy/ARM_TUNING.md) |
 | 转腰、俯仰与升降 | [PC2_TORSO_LIFT.md](deploy/PC2_TORSO_LIFT.md) |
 | Dex3 控制与抓握状态 | [PC2_HANDS.md](deploy/PC2_HANDS.md) |
+| 训练数据 v2、标注、离线导出、本次同步编译 | [TRAINING_DATA.md](deploy/TRAINING_DATA.md) |
 | 采集、数据格式与传输 | [PC2_RECORDING.md](deploy/PC2_RECORDING.md) |
 | 未完成任务恢复 | [PC2_RECORDING_RECOVERY.md](deploy/PC2_RECORDING_RECOVERY.md) |
 | 早期有线及转发部署记录 | [历史 README](deploy/LEGACY_README.md) |

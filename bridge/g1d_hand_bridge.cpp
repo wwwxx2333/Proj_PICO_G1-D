@@ -1,6 +1,7 @@
 // Independent Dex3-1 DDS process, one instance per side; no publish before ARM.
 // Topics, 7 motors, mode bits and gains follow SDK2 g1_dex3_example.cpp.
 #include "g1d_hand_guard.hpp"
+#include "g1d_recording.hpp"
 #include "g1d_dds_channel.hpp"
 #include <atomic>
 #include <cerrno>
@@ -45,6 +46,8 @@ void OnState(const void* raw,dex3::FeedbackSource source) {
     next.source=source;
     for (size_t i=0;i<7;++i) {
         next.q[i]=state.motor_state()[i].q();
+        next.dq[i]=state.motor_state()[i].dq();
+        next.tau_est[i]=state.motor_state()[i].tau_est();
         if (!std::isfinite(next.q[i])) { ++nonfinite_joint; return; }
     }
     std::lock_guard<std::mutex> lock(state_mutex);
@@ -145,6 +148,7 @@ int main(int argc,char** argv) {
     g1d::ClosingChannel<HandCmd_> publisher;
     publisher.Advertise("rt/dex3/"+side+"/cmd");
     dex3::Guard guard(left);
+    g1d::RecordingSink recording;
     TakeoverDiagnostics diagnostics;
     std::string pending;
     double previous=Now(),last_report=0,last_source_report=0;
@@ -290,6 +294,19 @@ int main(int argc,char** argv) {
                 if (written==static_cast<ssize_t>(text.size())) last_report=now;
                 else if (!(written<0 && errno==EAGAIN))
                     throw std::runtime_error("hand state reader disconnected");
+                if (recording.enabled()) {
+                    try {
+                        std::ostringstream row;
+                        row << std::setprecision(12) << "{\"side\":\"" << side
+                            << "\",\"topic\":\"" << (state.source==dex3::FeedbackSource::Fast ? "rt/dex3/" : "rt/lf/dex3/")
+                            << side << "/state\",\"received_at\":" << state.time << ",\"q\":";
+                        g1d::JsonOptionalArray(row, state.q);
+                        row << ",\"dq\":"; g1d::JsonOptionalArray(row, state.dq);
+                        row << ",\"tau_est\":"; g1d::JsonOptionalArray(row, state.tau_est);
+                        row << '}';
+                        recording.Send("hand_dynamics", row.str(), Now());
+                    } catch (...) { /* Recording must never fault robot control. */ }
+                }
             }
             // No catch-up bursts after a delayed iteration.
             std::this_thread::sleep_for(command_period);

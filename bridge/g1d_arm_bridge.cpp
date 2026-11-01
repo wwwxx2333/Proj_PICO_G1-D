@@ -225,6 +225,26 @@ int main(int argc, char** argv) {
                         row << ",\"waist_output_q\":"; g1d::JsonArray(row, waist.output);
                         row << '}';
                         recording.Send("arm_output", row.str(), Now());
+                        std::ostringstream feedback;
+                        feedback << std::setprecision(12) << "{\"received_at\":" << state.arm.received_at
+                                 << ",\"q\":";
+                        g1d::JsonOptionalArray(feedback, state.arm.q);
+                        feedback << ",\"dq\":"; g1d::JsonOptionalArray(feedback, state.arm.dq);
+                        feedback << ",\"tau_est\":"; g1d::JsonOptionalArray(feedback, state.arm.tau_est);
+                        feedback << ",\"waist\":[";
+                        for (int i=0; i<2; ++i) {
+                            if (i) feedback << ',';
+                            feedback << "{\"joint\":\"" << (i ? "pitch" : "yaw") << "\",\"received_at\":"
+                                     << (i ? state.pitch.received_at : state.arm.received_at) << ",\"q\":";
+                            g1d::JsonNumber(feedback, i ? state.pitch.q : state.arm.yaw);
+                            feedback << ",\"dq\":";
+                            g1d::JsonNumber(feedback, i ? state.pitch.dq : state.arm.yaw_dq);
+                            feedback << ",\"tau_est\":";
+                            g1d::JsonNumber(feedback, i ? state.pitch.tau_est : state.arm.yaw_tau_est);
+                            feedback << '}';
+                        }
+                        feedback << "]}";
+                        recording.Send("arm_dynamics", feedback.str(), Now());
                     } catch (...) { /* Optional telemetry never faults robot control. */ }
                 }
                 last_report = now;

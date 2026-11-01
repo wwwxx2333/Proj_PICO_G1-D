@@ -1,6 +1,7 @@
 """Local, timestamped pipe transport to one SDK2 Dex3-1 process per hand."""
 from dataclasses import dataclass
 import os
+import sys
 from pathlib import Path
 import subprocess
 import threading
@@ -69,8 +70,10 @@ class HandBridge:
     def _read_states(self):
         try:
             for raw in self.process.stdout:
-                fields = raw.decode('ascii').split()
+                fields = raw.decode("utf-8", errors="replace").split()
                 if not fields or not fields[0].startswith('HANDSTATE'):
+                    sys.stderr.write(raw.decode('utf-8', errors='replace'))
+                    sys.stderr.flush()
                     continue
                 state = parse_hand_state(fields)
                 with self._lock:

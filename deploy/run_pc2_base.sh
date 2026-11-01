@@ -2,10 +2,14 @@
 # Run manually on PC2: PICO -> TeleVuer -> local SDK2 -> internal eth0.
 # Default remains base-only; arm mode adds waist yaw; --with-lift adds the column.
 set -euo pipefail
+project_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$project_root/deploy/runtime_logging.sh"
+g1d_start_runtime_log "$project_root/deploy/run_pc2_base.sh" "$@"
 
 usage() {
     echo "Usage: bash deploy/run_pc2_base.sh [--camera-only | --with-arms | --with-arms-and-hands]"
     echo "       [--with-lift]"
+    echo "       [--full-log]  Show all logs; full runtime file is always saved."
     echo "Settings: project config/body.jsonc and config/arms.jsonc (no CLI overrides)."
     echo "Default: live base control and camera; right A arms, right B disarms."
     echo "Height limits must be verified rt/hispeed_state.y coordinates, not overall robot height."
@@ -18,6 +22,7 @@ with_lift=false
 mode_selected=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --full-log) shift ;; # Consumed by the outer logging supervisor.
         --help) usage; exit 0 ;;
         --camera-only|--with-arms|--with-arms-and-hands)
             if $mode_selected; then echo "Select one camera/arm mode only." >&2; exit 2; fi
@@ -46,7 +51,6 @@ if [[ $(uname -m) != aarch64 ]]; then
     exit 2
 fi
 
-project_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 runtime_python=${PICO_G1D_PYTHON:-"$HOME/miniconda3/envs/pico_g1d/bin/python"}
 bridge_bin="$project_root/bridge/build-arm64/g1d_agv_bridge"
 cert="$project_root/.local/https/cert.pem"

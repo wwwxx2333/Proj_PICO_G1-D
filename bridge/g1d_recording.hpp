@@ -5,6 +5,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
 #include <iomanip>
 #include <sstream>
@@ -48,6 +49,22 @@ template <class Values> inline void JsonArray(std::ostream& out, const Values& v
     for (auto value : values) {
         if (!first) out << ',';
         out << static_cast<float>(value);
+        first = false;
+    }
+    out << ']';
+}
+// Optional SDK dynamics may be nonfinite without invalidating position control.
+// JSON null preserves missingness instead of fabricating a zero measurement.
+inline void JsonNumber(std::ostream& out, double value) {
+    if (std::isfinite(value)) out << value;
+    else out << "null";
+}
+template <class Values> inline void JsonOptionalArray(std::ostream& out, const Values& values) {
+    out << '[';
+    bool first = true;
+    for (auto value : values) {
+        if (!first) out << ',';
+        JsonNumber(out, value);
         first = false;
     }
     out << ']';

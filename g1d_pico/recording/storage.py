@@ -12,7 +12,9 @@ import shutil
 import time
 import uuid
 
-SCHEMA = 'g1d-lab-recording-v1'
+from .layout import SCHEMA, LEGACY_SCHEMA, SUPPORTED, Layout
+from .quality import event_quality, QualitySummary
+from .views import derived_views
 RESERVE = 512 * 1024  # Reserved inside quota for final manifest and directory metadata.
 EPISODE_RE = re.compile(r'episode_[0-9]{8}_[0-9]{6}_[a-f0-9]{8}\Z')
 
@@ -20,6 +22,11 @@ EPISODE_RE = re.compile(r'episode_[0-9]{8}_[0-9]{6}_[a-f0-9]{8}\Z')
 def encode(value):
     return (json.dumps(value, ensure_ascii=False, allow_nan=False,
                        separators=(',', ':')) + '\n').encode('utf-8')
+
+
+def pretty(value):
+    """Human-edited metadata stays readable; JSONL uses compact encode()."""
+    return (json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2) + '\n').encode('utf-8')
 
 
 def sha256(path):
@@ -79,6 +86,10 @@ class EpisodeStore:
     filling the filesystem are handled by the free-space guard and write errors.
     """
     def __init__(self, root, max_bytes, min_free_bytes, metadata):
+        # Direct callers without a schema retain the v1 API; production runner sets v2.
+        self.layout = Layout(metadata.get('schema', LEGACY_SCHEMA))
+        self.quality = QualitySummary()
+        self.max_state_age = metadata.get('dataset_settings', {}).get('max_state_age_s', .25)
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.max_bytes = max_bytes
@@ -113,13 +124,15 @@ class EpisodeStore:
         self.control_exit_code = None
         (self.path / 'IN_PROGRESS').write_text('Unfinalized. Do not train on or delete automatically.\n')
         for camera in ('head', 'left_wrist', 'right_wrist'):
-            (self.path / 'images' / camera).mkdir(parents=True)
+            (self.path / self.layout.image_root / camera).mkdir(parents=True)
         description = dict(clock_anchor={'pc2_monotonic_s': time.monotonic(), 'unix_time_ns': time.time_ns()},
                            base_world_pose=None, base_world_pose_available=False)
-        description.update(metadata)  # Recovery keeps the original clock anchor.
-        description.update(schema=SCHEMA, episode_id=name,
+        description.update({k: v for k, v in metadata.items() if k != '_artifacts'})  # Recovery keeps the original clock anchor.
+        description.update(schema=self.layout.schema, episode_id=name,
                            created_utc=datetime.now(timezone.utc).isoformat())
-        self.write('metadata.json', encode(description))
+        self.write('metadata.json', pretty(description))
+        for name, value in metadata.get('_artifacts', {}).items():
+            self.write(name, value.encode('utf-8') if isinstance(value, str) else pretty(value))
 
     def stop(self, reason):
         if self.reason is None:
@@ -144,12 +157,18 @@ class EpisodeStore:
         allocated = lambda x: math.ceil(x / self.block) * self.block
         return allocated(old + n) - allocated(old)
 
-    def write(self, name, data):
+    def write(self, name, data, *, reserved=False):
+        target = safe_file(self.path, name)
         growth = self._growth(name, len(data))
-        self._check(growth)
+        if reserved:
+            if name != 'quality/summary.json' or len(data) > RESERVE // 4:
+                raise ValueError('Invalid reserved finalization write')
+        else:
+            self._check(growth)
         try:
             if name not in self.handles:
-                self.handles[name] = (self.path / name).open('xb', buffering=0)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                self.handles[name] = target.open('xb', buffering=0)
                 self.hashes[name] = hashlib.sha256()
                 self.sizes[name] = 0
             view = memoryview(data)
@@ -160,7 +179,7 @@ class EpisodeStore:
                 view = view[n:]
             self.hashes[name].update(data)
             self.sizes[name] += len(data)
-            self.used += growth
+            self.used += 0 if reserved else growth
         except OSError as exc:
             self.write_error = str(exc)
             self.stop('WRITE_ERROR')
@@ -184,20 +203,29 @@ class EpisodeStore:
             self.sequence_gaps[producer] += max(0, seq - previous - 1)
             self.last_seq[producer] = seq
         self.dropped[producer] = max(self.dropped.get(producer, 0), max(0, total_drops - self.drop_baselines.get(producer, 0)))
-        self.write('telemetry.jsonl', encode(event))
+        if not self.layout.legacy:
+            event = {**event, 'quality': event_quality(event, self.max_state_age)}
+        self.write(self.layout.events(stream), encode(event))
+        self.quality.observe(event)
         self.streams[stream] += 1
+        if not self.layout.legacy:
+            for view in derived_views(event):
+                view['quality'] = event_quality(view, self.max_state_age)
+                self.write(self.layout.events(view['stream']), encode(view))
+                self.quality.observe(view)
+                self.streams[view['stream']] += 1
         if stream == 'bridge_exit':
             self.bridge_exits[event['data']['bridge']] = event['data']
         if stream == 'session_end':
             self.control_exit_code = event['data'].get('control_exit_code')
         if stream == 'console':
-            self.write('console.log', event['data']['text'].encode('utf-8', errors='replace'))
+            self.write(self.layout.console, event['data']['text'].encode('utf-8', errors='replace'))
 
     def frame(self, camera, jpg, received_at, received_seq):
         if camera not in ('head', 'left_wrist', 'right_wrist'):
             raise ValueError('invalid camera name')
         index = self.frames[camera]
-        name = f'images/{camera}/{index:08d}.jpg'
+        name = self.layout.image(camera, index)
         record = dict(camera=camera, frame_index=index, path=name, bytes=len(jpg),
                       sha256=hashlib.sha256(jpg).hexdigest(), received_seq=received_seq,
                       received_monotonic_s=received_at, timestamp_kind='pc2_zmq_receive',
@@ -205,7 +233,7 @@ class EpisodeStore:
         row = encode(record)
         # Reserve BOTH image and its index before writing either.
         growth = math.ceil(len(jpg) / self.block) * self.block
-        self._check(growth + self._growth('frames.jsonl', len(row)))
+        self._check(growth + self._growth(self.layout.frames, len(row)))
         try:
             with (self.path / name).open('xb', buffering=0) as image:
                 view = memoryview(jpg)
@@ -215,7 +243,7 @@ class EpisodeStore:
                         raise OSError('short JPEG write')
                     view = view[n:]
             self.used += growth
-            self.write('frames.jsonl', row)
+            self.write(self.layout.frames, row)
             self.frames[camera] += 1
         except (OSError, RecordingStopped) as exc:
             self.write_error = str(exc)
@@ -228,6 +256,8 @@ class EpisodeStore:
         self.stop(reason)
         report = progress or (lambda **kwargs: None)
         try:
+            if not self.layout.legacy and 'quality/summary.json' not in self.handles:
+                self.write('quality/summary.json', pretty(self.quality.report()), reserved=True)
             for index, (name, handle) in enumerate(self.handles.items()):
                 report(stage='sync_metadata', completed=index, total=len(self.handles), current=name)
                 os.fsync(handle.fileno())
@@ -236,7 +266,7 @@ class EpisodeStore:
             # have already been closed, but may still have dirty page-cache data.
             sync_tree(self.path, progress=progress)
             report(stage='publish_manifest', completed=0, total=1, current='manifest.json')
-            manifest = dict(schema=SCHEMA, episode_id=self.path.name,
+            manifest = dict(schema=self.layout.schema, episode_id=self.path.name,
                 finalized=True, recording_stop_reason=self.reason,
                 recording_stopped_monotonic_s=self.stop_monotonic,
                 finalized_utc=datetime.now(timezone.utc).isoformat(),
@@ -248,7 +278,7 @@ class EpisodeStore:
                 timestamp_quality='Software receive times; NOT hardware-synchronized exposure times',
                 files={name: {'bytes': self.sizes[name], 'sha256': digest.hexdigest()}
                        for name, digest in self.hashes.items()}, **(extra or {}))
-            content = encode(manifest)
+            content = pretty(manifest)
             if len(content) >= RESERVE // 2:
                 raise RuntimeError('manifest exceeds reserved size')
             temp = self.path / 'manifest.json.tmp'
@@ -285,9 +315,15 @@ def verify_episode(path):
     if not EPISODE_RE.fullmatch(path.name) or (path / 'IN_PROGRESS').exists():
         raise ValueError(f'Not a finalized episode: {path}')
     manifest = json.loads((path / 'manifest.json').read_text())
-    if (manifest.get('schema') != SCHEMA or manifest.get('episode_id') != path.name
+    if (manifest.get('schema') not in SUPPORTED or manifest.get('episode_id') != path.name
             or manifest.get('finalized') is not True or manifest.get('write_error')):
         raise ValueError('Invalid or write-damaged manifest')
+    layout = Layout(manifest['schema'])
+    # Reject symlinks before reading any content inside the episode.
+    actual = {str(p.relative_to(path)) for p in regular_files(path)}
+    metadata = json.loads((path / 'metadata.json').read_text())
+    if metadata.get('schema') != layout.schema or metadata.get('episode_id') != path.name:
+        raise ValueError('Metadata schema/episode mismatch')
     expected = {'manifest.json'}
     for name, info in manifest['files'].items():
         file = safe_file(path, name)
@@ -295,16 +331,16 @@ def verify_episode(path):
             raise ValueError(f'Checksum mismatch: {name}')
         expected.add(name)
     counts = Counter()
-    frames = path / 'frames.jsonl'
+    frames = path / layout.frames
     if frames.exists():
-        if 'frames.jsonl' not in manifest['files']:
+        if layout.frames not in manifest['files']:
             raise ValueError('Unchecked frame index')
         with frames.open() as source:
             for line in source:
                 frame = json.loads(line)
                 name = frame['path']
                 camera = frame['camera']
-                if name != f'images/{camera}/{counts[camera]:08d}.jpg' or name in expected:
+                if name != layout.image(camera, counts[camera]) or name in expected:
                     raise ValueError('Invalid or duplicate image index')
                 image = safe_file(path, name)
                 if image.stat().st_size != frame['bytes'] or sha256(image) != frame['sha256']:

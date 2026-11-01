@@ -13,6 +13,8 @@ from pathlib import Path
 import shutil
 import time
 
+from .layout import SUPPORTED, Layout, ARTIFACTS
+from .quality import event_quality, QualitySummary
 from .storage import (SCHEMA, EPISODE_RE, EpisodeStore, FileLock, encode,
                       regular_files, safe_file, sha256, storage_usage, verify_episode)
 
@@ -78,10 +80,14 @@ def inspect_episode(path, notice=print):
     if metadata_path.stat().st_size > 4 * 1024 * 1024:
         raise ValueError('Oversized metadata')
     metadata = json_object(metadata_path.read_bytes())
-    if metadata.get('schema') != SCHEMA or metadata.get('episode_id') != path.name:
+    if metadata.get('schema') not in SUPPORTED or metadata.get('episode_id') != path.name:
         raise ValueError('Metadata schema/episode mismatch')
-    expected = {'metadata.json', 'frames.jsonl', 'telemetry.jsonl', 'console.log',
-                'IN_PROGRESS', 'manifest.json', 'manifest.json.tmp'}
+    layout = Layout(metadata['schema'])
+    event_files = layout.telemetry_files(path)
+    artifacts = [n for n in ARTIFACTS if n in files] if not layout.legacy else []
+    expected = {'metadata.json', layout.frames, layout.console, *event_files, *artifacts,
+                'IN_PROGRESS', 'manifest.json', 'manifest.json.tmp', 'quality/summary.json'}
+    quality = QualitySummary()
     counts = Counter()
     image_bytes = 0
     last_notice = time.monotonic()
@@ -93,7 +99,7 @@ def inspect_episode(path, notice=print):
         if camera not in CAMERAS:
             raise ValueError('Unknown camera in index')
         index = counts[camera]
-        name = f'images/{camera}/{index:08d}.jpg'
+        name = layout.image(camera, index)
         if record.get('frame_index') != index or record.get('path') != name:
             raise ValueError(f'Non-contiguous image index: {record.get("path")}')
         timestamp = record.get('received_monotonic_s')
@@ -129,9 +135,13 @@ def inspect_episode(path, notice=print):
     bridge_exits = {}
     control_exit_code = None
     control_end_observed = False
+    observed_end = max(last_time.values(), default=0)
 
     def event(record):
-        nonlocal control_exit_code, control_end_observed
+        nonlocal control_exit_code, control_end_observed, observed_end
+        emitted = record.get('emitted_monotonic_s')
+        if isinstance(emitted,(int,float)) and math.isfinite(emitted):
+            observed_end = max(observed_end,emitted)
         stream = record.get('stream')
         if not isinstance(stream, str) or not isinstance(record.get('data'), dict):
             raise ValueError('Invalid telemetry record')
@@ -145,25 +155,33 @@ def inspect_episode(path, notice=print):
             sequences[producer] = seq
         drops[producer] = max(drops.get(producer, 0), int(record.get('dropped_total', 0)))
         streams[stream] += 1
+        quality.observe({**record, 'quality': event_quality(record, metadata.get('dataset_settings', {}).get('max_state_age_s', .25))})
         if stream == 'bridge_exit':
             bridge_exits[record['data']['bridge']] = record['data']
         if stream == 'session_end':
             control_end_observed = True
             control_exit_code = record['data'].get('control_exit_code')
 
-    frames = inspect_jsonl(path/'frames.jsonl', frame)
-    telemetry = inspect_jsonl(path/'telemetry.jsonl', event)
+    indices = {layout.frames: inspect_jsonl(path/layout.frames, frame)}
+    for name in event_files:
+        indices[name] = inspect_jsonl(path/name, event)
     ignored = sorted(set(files)-expected)
     source_hashes = {name: sha256(files[name]) for name in
-                     ('metadata.json', 'frames.jsonl', 'telemetry.jsonl', 'console.log') if name in files}
+                     ('metadata.json', layout.frames, layout.console, *event_files, *artifacts) if name in files}
+    # Separate files preserve per-producer sequences but not total receive order.
+    # Do not report gaps obtained by traversing streams in filename order.
+    if not layout.legacy:
+        gaps.clear()
     return dict(source_episode=str(path), source_episode_id=path.name,
                 audited_utc=datetime.now(timezone.utc).isoformat(),
-                metadata=metadata, jsonl={'frames.jsonl': frames, 'telemetry.jsonl': telemetry},
+                metadata=metadata, jsonl=indices, quality=quality.report(),
+                last_source_monotonic_s=max(observed_end, max(last_time.values(),default=0)),
+                sequence_gap_audit='legacy traversal' if layout.legacy else 'not reconstructed across routed files',
                 frame_counts=dict(counts), stream_counts=dict(streams),
                 sequence_gaps=dict(gaps), producer_reported_drops=drops,
                 bridge_exits=bridge_exits, control_exit_code=control_exit_code,
                 control_end_observed=control_end_observed,
-                truncated=frames['truncated'] or telemetry['truncated'],
+                truncated=any(v['truncated'] for v in indices.values()),
                 ignored_files=ignored, source_file_sha256=source_hashes,
                 estimated_copy_bytes=image_bytes+sum(files[n].stat().st_size for n in source_hashes),
                 tail_completeness='unknown', automatic_source_deletion_allowed=False)
@@ -200,9 +218,21 @@ def recover_episode(path, output_root=None, allow_truncated=False, notice=print)
         if shutil.disk_usage(destination).free < required + 100*1024*1024:
             raise ValueError('Insufficient free space for a separate recovery copy')
         metadata = dict(report['metadata'])
-        for key in ('schema', 'episode_id', 'created_utc'):
+        layout = Layout(metadata['schema'])
+        for key in ('episode_id', 'created_utc'):
             metadata.pop(key, None)
         metadata['recovered_from'] = report['source_episode_id']
+        if not layout.legacy:
+            # Freeze the original snapshots, never substitute this host's configuration.
+            metadata['_artifacts'] = {}
+            for name in ARTIFACTS:
+                source = original/name
+                if source.exists():
+                    if source.stat().st_size > 4*1024*1024:
+                        raise ValueError(f'Oversized artifact: {name}')
+                    text = source.read_bytes().decode("utf-8")
+                    if name.endswith('.json'): json_object(text)
+                    metadata['_artifacts'][name] = text
         destination_lock = FileLock(destination/'.lock')
         try:
             store = EpisodeStore(destination, storage_usage(destination)+required, 100*1024*1024, metadata)
@@ -212,7 +242,7 @@ def recover_episode(path, output_root=None, allow_truncated=False, notice=print)
         try:
             copied = 0
             last_notice = time.monotonic()
-            for raw in rows(original/'frames.jsonl', report['jsonl']['frames.jsonl']['valid_bytes']):
+            for raw in rows(original/layout.frames, report['jsonl'][layout.frames]['valid_bytes']):
                 frame = json_object(raw)
                 jpg = safe_file(original, frame['path']).read_bytes()
                 if hashlib.sha256(jpg).hexdigest() != frame['sha256']:
@@ -222,11 +252,15 @@ def recover_episode(path, output_root=None, allow_truncated=False, notice=print)
                 if time.monotonic()-last_notice >= 2:
                     notice(f'Recovery copy: {copied}/{sum(report["frame_counts"].values())} images')
                     last_notice = time.monotonic()
-            for name in ('telemetry.jsonl', 'console.log'):
+            for name in (*layout.telemetry_files(original), layout.console):
                 source = original/name
                 if source.exists():
                     count = report['jsonl'][name]['valid_bytes'] if name.endswith('.jsonl') else source.stat().st_size
                     copy_prefix(store, source, name, count)
+                    if name.endswith('.jsonl') and not layout.legacy:
+                        for raw in rows(source, count):
+                            event = json_object(raw)
+                            store.quality.observe({**event, 'quality': event_quality(event, store.max_state_age)})
             for name, digest in report['source_file_sha256'].items():
                 if sha256(original/name) != digest:
                     raise ValueError(f'Source changed during recovery: {name}')
@@ -240,7 +274,8 @@ def recover_episode(path, output_root=None, allow_truncated=False, notice=print)
             store.finish('RECOVERED_UNFINALIZED', extra={
                 'recovery': dict(source_episode_id=report['source_episode_id'],
                                  truncated=report['truncated'], tail_completeness='unknown',
-                                 control_end_observed=report['control_end_observed']),
+                                 control_end_observed=report['control_end_observed'],
+                                 last_source_monotonic_s=report['last_source_monotonic_s']),
                 'automatic_source_deletion_allowed': False})
             verify_episode(store.path)
         except BaseException:

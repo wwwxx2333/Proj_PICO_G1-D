@@ -1,0 +1,86 @@
+{
+  // 标定版本编号；未实测前保留 null。
+  "calibration_id": null,
+  // 单位统一为米和弧度；刚体矩阵使用行主序 4×4，T_parent_child 把子坐标变换到父坐标。
+  "transform_convention": "T_parent_child, row-major 4x4, metres",
+  // 相机必须分别填写标定结果。头部图像为左右目拼接，左右目分别标定，不能共用一个 K。
+  // image_size 为 [width,height]；K 为 3×3；distortion 含 model 与 coefficients。
+  // parent_link 为 URDF 的安装父链接；T_parent_camera 为固定安装外参，不是全局相机位姿。
+  "cameras": {
+    "head_left": {
+      // 实际标定图像尺寸 [width,height]；像素。
+      "image_size": null,
+      // 3×3 内参，焦距和主点单位为像素。
+      "K": null,
+      // {"model":"标定模型名","coefficients":[...]}；按该模型约定。
+      "distortion": null,
+      // 相机安装父链接，必须存在于本次 URDF。
+      "parent_link": null,
+      // 4×4 刚体外参，将相机坐标变换到父链接；平移单位 m。
+      "T_parent_camera": null
+    },
+    "head_right": {
+      // 实际标定图像尺寸 [width,height]；像素。
+      "image_size": null,
+      // 3×3 内参，焦距和主点单位为像素。
+      "K": null,
+      // {"model":"标定模型名","coefficients":[...]}；按该模型约定。
+      "distortion": null,
+      // 相机安装父链接，必须存在于本次 URDF。
+      "parent_link": null,
+      // 4×4 刚体外参，将相机坐标变换到父链接；平移单位 m。
+      "T_parent_camera": null
+    },
+    "left_wrist": {
+      // 实际标定图像尺寸 [width,height]；像素。
+      "image_size": null,
+      // 3×3 内参，焦距和主点单位为像素。
+      "K": null,
+      // {"model":"标定模型名","coefficients":[...]}；按该模型约定。
+      "distortion": null,
+      // 相机安装父链接，必须存在于本次 URDF。
+      "parent_link": null,
+      // 4×4 刚体外参，将相机坐标变换到父链接；平移单位 m。
+      "T_parent_camera": null
+    },
+    "right_wrist": {
+      // 实际标定图像尺寸 [width,height]；像素。
+      "image_size": null,
+      // 3×3 内参，焦距和主点单位为像素。
+      "K": null,
+      // {"model":"标定模型名","coefficients":[...]}；按该模型约定。
+      "distortion": null,
+      // 相机安装父链接，必须存在于本次 URDF。
+      "parent_link": null,
+      // 4×4 刚体外参，将相机坐标变换到父链接；平移单位 m。
+      "T_parent_camera": null
+    }
+  },
+  // 三指手的工具中心需按实际使用定义；未标定前不可把腕部坐标直接称为抓取 TCP。
+  "tools": {
+    "left": {
+      // 工具安装父链接，不自动假定腕关节就是抓取中心。
+      "parent_link": null,
+      // 标定后的 4×4 工具中心外参；平移单位 m。
+      "T_parent_tcp": null
+    },
+    "right": {
+      // 工具安装父链接，不自动假定腕关节就是抓取中心。
+      "parent_link": null,
+      // 标定后的 4×4 工具中心外参；平移单位 m。
+      "T_parent_tcp": null
+    }
+  },
+  // null 或说明实测映射关系的字符串；不自动执行此映射。
+  // 立柱反馈与 URDF 两个伸缩关节的对应关系需要实测确认，不能凭总高度分摊。
+  "column_mapping": null,
+  // 导航定位尚未接入；此字段记录标定说明，不会自动启动定位。
+  "localization": {
+    // 未来定位系统的名称；当前没有订阅器，保留 null。
+    "source": null,
+    // 对应地图/世界坐标系名称；未建立时为 null。
+    "frame_id": null,
+    // 是否实测验证过该定位说明；true 也不会自动启动定位程序。
+    "validated": false
+  }
+}

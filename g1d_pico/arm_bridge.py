@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 import os
+import sys
 from pathlib import Path
 import subprocess
 import threading
@@ -104,9 +105,11 @@ class ArmBridge:
     def _read_states(self):
         try:
             for raw in self.process.stdout:
-                fields = raw.decode("ascii").split()
+                fields = raw.decode("utf-8", errors="replace").split()
                 # SDK diagnostics may also be printed on stdout.
                 if not fields or not fields[0].startswith('STATE'):
+                    sys.stderr.write(raw.decode('utf-8', errors='replace'))
+                    sys.stderr.flush()
                     continue
                 state = parse_arm_state(fields)
                 with self._lock:

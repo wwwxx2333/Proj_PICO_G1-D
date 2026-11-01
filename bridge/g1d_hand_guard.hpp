@@ -16,6 +16,7 @@ struct Feedback {
     double time=0;
     Joints q{};
     FeedbackSource source=FeedbackSource::None;
+    Joints dq{}, tau_est{}; // Optional recording fields, unused by hand control.
 };
 inline constexpr Joints left_lower{-1.05,-0.724,0,-1.57,-1.75,-1.57,-1.75};
 inline constexpr Joints left_upper{1.05,1.05,1.75,0,0,0,0};

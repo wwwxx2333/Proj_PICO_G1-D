@@ -35,7 +35,7 @@ def wait_for_recorder(worker, receive, notice, abort_requested, stall_after=60.0
             if key != last_key:
                 last_key = key
                 last_progress = time.monotonic()
-        elif state == 'finished':
+        elif state in ('finished', 'idle_closed'):
             finished = True
             stage = 'worker_cleanup'
             last_progress = time.monotonic()

@@ -13,6 +13,9 @@ void TestDedicatedFeedbackAndIndependentTimestamps() {
     low.motor_state()[12].q() = 0.2f;
     low.motor_state()[14].q() = std::numeric_limits<float>::quiet_NaN();
     low.motor_state()[15].q() = 0.1f;
+    low.motor_state()[15].dq() = 0.25f;
+    low.motor_state()[15].tau_est() = 1.5f;
+    low.motor_state()[16].dq() = std::numeric_limits<float>::quiet_NaN();
     low.crc() = g1d::HgCrc(&low, (sizeof(low) >> 2)-1);
     g1d::UpperBodyFeedback feedback;
     assert(g1d::DecodeArmState(low, 10.0, feedback.arm));
@@ -26,6 +29,8 @@ void TestDedicatedFeedbackAndIndependentTimestamps() {
     assert(std::abs(feedback.waist()[0]-0.2)<1e-6);
     assert(std::abs(feedback.waist()[1]-0.3)<1e-6);
     assert(feedback.arm.mode == 3);
+    assert(feedback.arm.dq[0] == .25 && feedback.arm.tau_est[0] == 1.5);
+    assert(std::isnan(feedback.arm.dq[1])); // Optional dq does not reject valid q.
 
     // New lowstate must never refresh a stopped pitch stream or substitute [14].
     low.motor_state()[14].q() = 1.0f;

@@ -124,7 +124,7 @@ class LauncherTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         (self.root / 'deploy').mkdir()
-        for name in ('run_pc2_arms.sh', 'run_pc2_base.sh', 'record_pc2.sh'):
+        for name in ('run_pc2_arms.sh', 'run_pc2_base.sh', 'record_pc2.sh', 'runtime_logging.sh'):
             shutil.copy2(ROOT / 'deploy' / name, self.root / 'deploy' / name)
 
         def executable(path, text):
@@ -144,6 +144,7 @@ class LauncherTests(unittest.TestCase):
         (tls / 'cert.pem').touch()
         (tls / 'key.pem').touch()
         self.env = os.environ.copy()
+        self.env['G1D_RUNTIME_LOG_ACTIVE'] = 'argument-fixture'
         self.env['PATH'] = str(fakebin) + os.pathsep + self.env['PATH']
         self.env['PICO_G1D_PYTHON'] = str(fakebin / 'runtime')
 

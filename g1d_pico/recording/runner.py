@@ -4,20 +4,22 @@ import codecs
 import multiprocessing as mp
 import os
 from pathlib import Path
-import queue
 import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import uuid
 
 from ..config_io import load_config
 from ..config_paths import PROJECT_ROOT, ARM_CONFIG, BODY_CONFIG
+from .dataset import snapshot_artifacts
 from .button import RecordingRequests
 from .session import EpisodeSession
 from .storage import FileLock, sha256
 from .telemetry import Telemetry
+from ..runtime_logging.runner import ConsoleForwarder
 
 PROJECT = PROJECT_ROOT
 CONTROL_LOCK = PROJECT / '.local/control_session.lock'
@@ -79,27 +81,13 @@ def drain_console(pipe, sink, display):
                 break
             text = decoder.decode(chunk)
             sink.emit('console', {'text': text})
-            try:
-                display.put_nowait(text)
-            except queue.Full:
-                pass  # Only terminal display is dropped; recording has its own path.
+            display.write(text)
     finally:
         tail = decoder.decode(b'', final=True)
         if tail:
             sink.emit('console', {'text': tail})
+            display.write(tail)
         pipe.close()
-
-
-def display_console(display):
-    while True:
-        text = display.get()
-        if text is None:
-            return
-        try:
-            sys.stdout.write(text)
-            sys.stdout.flush()
-        except (OSError, ValueError):
-            return
 
 
 def run(settings, command, instruction='', scene='lab', object_ids=''):
@@ -112,24 +100,21 @@ def run(settings, command, instruction='', scene='lab', object_ids=''):
 
 def _run_locked(settings, command, instruction, scene, object_ids):
     context = mp.get_context('spawn')
-    display = queue.Queue(maxsize=256)
-    threading.Thread(target=display_console, args=(display,), daemon=True).start()
+    display = ConsoleForwarder()
     def notice(text):
-        try:
-            display.put_nowait(text + '\n')
-        except queue.Full:
-            pass
-    metadata = dict(instruction=instruction, scene=scene, object_ids=object_ids,
+        display.write(text + '\n')
+    metadata = dict(session_id='session_' + uuid.uuid4().hex, instruction=instruction, scene=scene, object_ids=object_ids,
                     control_command=command, **code_snapshot(),
                     units={'joint_q': 'rad', 'height': 'm', 'linear_velocity': 'm/s', 'yaw_rate': 'rad/s'},
                     arm_joint_order=[f'{side}_{joint}' for side in ('left', 'right')
                                      for joint in ('shoulder_pitch', 'shoulder_roll', 'shoulder_yaw',
                                                    'elbow', 'wrist_roll', 'wrist_pitch', 'wrist_yaw')],
                     limitations=['No global base localization or measured planar velocity source',
-                                 'Joint q and targets only; dq/torque/force feedback not exported',
+                                 'Joint dq/tau_est use SDK feedback; tau_est is not a contact-force measurement',
                                  'PICO matrices are XR tracking-frame poses, not robot world poses',
                                  'Camera time is PC2 receive time; transport may skip camera frames',
                                  'Command submission / DDS Write is not proof of physical execution'])
+    metadata = snapshot_artifacts(metadata, command)
     with tempfile.TemporaryDirectory(prefix='g1d-record-') as temporary:
         address = str(Path(temporary) / 'telemetry.sock')
         requests = RecordingRequests(Path(temporary) / 'control.sock')
@@ -141,6 +126,7 @@ def _run_locked(settings, command, instruction, scene, object_ids):
         control_interrupts = 0
         recording_finished = False
         try:
+            session.prepare()
             environment = os.environ.copy()
             environment['G1D_RECORD_SOCKET'] = address
             environment['G1D_RECORD_CONTROL_SOCKET'] = str(requests.path)
@@ -168,11 +154,10 @@ def _run_locked(settings, command, instruction, scene, object_ids):
                 previous[signum] = signal.signal(signum, forward)
             reader = threading.Thread(target=drain_console, args=(child.stdout, sink, display), daemon=True)
             reader.start()
-            session.waiting_notice()
             while child.poll() is None:
                 # Poll requests BEFORE reaping: a press arriving during saving is
                 # rejected as busy, never turned into a delayed start afterward.
-                requests.poll(session.toggle)
+                requests.poll(session.request, session.set_control_ready, session.snapshot)
                 session.poll()
                 time.sleep(.05)
             result = child.wait()

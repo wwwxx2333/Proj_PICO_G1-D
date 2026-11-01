@@ -17,6 +17,7 @@ from project_fixture import copy_runtime_project
 
 from g1d_pico.recording.recorder import CAMERAS, run_worker
 from g1d_pico.recording.storage import verify_episode
+from g1d_pico.recording.layout import Layout
 from g1d_pico.recording.telemetry import Telemetry
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -33,21 +34,25 @@ def wait_until(predicate, timeout=10):
     while not predicate():
         if time.monotonic()>end: raise RuntimeError('fixture wait timed out')
         time.sleep(.02)
-def record_toggle(identity=None):
+def control_request(value):
     address = os.environ['G1D_RECORD_CONTROL_SOCKET']
     local = str(pathlib.Path(address).parent / ('test-'+uuid.uuid4().hex[:8]+'.sock'))
     client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
     client.bind(local)
     client.settimeout(3)
     try:
-        client.sendto(json.dumps({'op':'toggle','id':identity or uuid.uuid4().hex,
-                                  'time':time.monotonic()}).encode(), address)
-        return json.loads(client.recv(4096))['result']
+        client.sendto(json.dumps({**value, 'time':time.monotonic()}).encode(), address)
+        return json.loads(client.recv(4096))
     finally:
         client.close()
         pathlib.Path(local).unlink(missing_ok=True)
+def control_ready(ready=True):
+    return control_request({'op':'control_status','ready':ready,'reason':'fixture homing pending'})
+def record_toggle(identity=None, action='stop'):
+    return control_request({'op':'record','action':action,'id':identity or uuid.uuid4().hex})['result']
 def start_recording():
-    assert record_toggle() == 'starting'
+    wait_until(lambda: control_ready()['ready'])
+    assert record_toggle(action='start') == 'starting'
     wait_until(lambda: pathlib.Path(os.environ['G1D_RECORD_SOCKET']).exists())
     time.sleep(.1)
 """
@@ -150,14 +155,50 @@ class IntegrationTests(unittest.TestCase):
                                CONTROL_HELPER + ('start_recording()\n' if start else '') + script],
                               cwd=self.project, capture_output=True, text=True, timeout=25)
 
+    def test_prepare_before_press_and_reject_start_during_homing(self):
+        script = r"""
+wait_until(lambda: control_ready(False)['state'] == 'waiting')
+assert list(spool.glob('episode_*')) == []
+assert record_toggle(action='start') == 'not_ready'
+time.sleep(.2)
+assert list(spool.glob('episode_*')) == []
+start_recording()
+print('AFTER_HOME_RECORDED', flush=True)
+time.sleep(.2)
+"""
+        result = self.run_supervisor(self.settings([], 60000), script, start=False)
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+        self.assertIn('REC NOT_READY', result.stdout)
+        episode, = (self.root/'spool').glob('episode_*')
+        verify_episode(episode)
+
+    def test_camera_setup_failure_is_reported_before_l3_without_stopping_control(self):
+        cameras = FakeCameras()
+        cameras.config['head_camera']['enable_zmq'] = False
+        try:
+            script = "wait_until(lambda: control_ready()['state'] == 'error')\nprint('CONTROL_CONTINUES')"
+            result = self.run_supervisor(self.settings(['head'], cameras.port), script, start=False)
+            self.assertEqual(result.returncode, 2, result.stdout+result.stderr)
+            self.assertIn('ZMQ is disabled', result.stdout)
+            self.assertIn('CONTROL_CONTINUES', result.stdout)
+            self.assertEqual(list((self.root/'spool').glob('episode_*')), [])
+        finally:
+            cameras.close()
+
     def test_supervisor_captures_console_exit_code_and_does_not_upload(self):
+        metric = 'ARMED L=(+0.30,+0.00) R=(+0.00,+0.00) -> vx=+0.300 m/s'
         result = self.run_supervisor(self.settings([], 60000),
             "from g1d_pico.recording.telemetry import emit; "
-            "emit('control_cycle', {'armed': False}); print('CONTROL_FINISHED'); raise SystemExit(7)")
+            "emit('control_cycle', {'armed': False}); "
+            f"print({metric!r}); print('CONTROL_FINISHED'); raise SystemExit(7)")
         self.assertEqual(result.returncode, 7, result.stderr + result.stdout)
         episode, = (self.root/'spool').glob('episode_*')
         manifest = verify_episode(episode)
-        self.assertIn('CONTROL_FINISHED', (episode/'console.log').read_text())
+        self.assertIn('CONTROL_FINISHED', (episode/Layout(manifest['schema']).console).read_text())
+        self.assertIn(metric, (episode/Layout(manifest['schema']).console).read_text())
+        log, = (self.project/'logs/runtime').glob('run_*.log')
+        self.assertIn(metric, log.read_text())
+        self.assertNotIn(metric, result.stdout)
         self.assertEqual(manifest['stream_counts']['session_end'], 1)
         self.assertFalse((self.root/'spool'/'.incoming').exists())
 
@@ -234,7 +275,7 @@ class IntegrationTests(unittest.TestCase):
             "emit('control_cycle', {'armed': True}); print('NO_RECORDING'); "
             "emit('control_cycle', {'armed': False})", start=False)
         self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
-        self.assertIn('REC WAITING', result.stdout)
+        self.assertIn('REC PREPARING', result.stdout)
         self.assertEqual(list((self.root/'spool').glob('episode_*')), [])
 
     def test_two_manual_episodes_exclude_idle_and_reject_duplicate_request(self):
@@ -269,15 +310,18 @@ time.sleep(.2)
         episodes = sorted((self.root/'spool').glob('episode_*'))
         self.assertEqual(len(episodes), 2)
         logs = []
+        session_ids = set()
         for episode in episodes:
             manifest = verify_episode(episode)
             self.assertEqual(manifest['recording_stop_reason'], 'L3_STOP')
             self.assertEqual(sum(manifest['sequence_gaps'].values()), 0)
-            logs.append((episode/'console.log').read_text())
+            logs.append((episode/Layout(manifest['schema']).console).read_text())
             metadata = json.loads((episode/'metadata.json').read_text())
-            rows = [json.loads(line) for line in (episode/'telemetry.jsonl').read_text().splitlines()]
+            session_ids.add(metadata['session_id'])
+            rows = [json.loads(line) for line in ''.join((episode/name).read_text() for name in Layout(manifest['schema']).telemetry_files(episode)).splitlines()]
             self.assertTrue(all(metadata['recording_started_monotonic_s'] <= row['emitted_monotonic_s']
                                 <= manifest['recording_requested_stop_monotonic_s'] for row in rows))
+        self.assertEqual(len(session_ids), 1)
         self.assertIn('FIRST_EPISODE', logs[0])
         self.assertIn('B_DOES_NOT_STOP_RECORDING', logs[0])
         self.assertIn('SECOND_EPISODE', logs[1])
@@ -286,7 +330,7 @@ time.sleep(.2)
         self.assertEqual(result.stdout.count('REC SAVED'), 2)
 
     def test_start_failure_does_not_exit_control(self):
-        script = "assert record_toggle() == 'starting'\ntime.sleep(.6)\nprint('CONTROL_SURVIVED_FULL_CACHE')"
+        script = "wait_until(lambda: control_ready()['ready'])\nassert record_toggle(action='start') == 'starting'\ntime.sleep(.6)\nprint('CONTROL_SURVIVED_FULL_CACHE')"
         settings = self.settings([], 60000, .01)
         (self.root/'spool').mkdir()
         (self.root/'spool'/'existing.bin').write_bytes(b'x'*10_000_000)

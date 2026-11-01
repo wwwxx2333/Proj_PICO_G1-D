@@ -45,7 +45,7 @@ def camera_config(context, port):
         request.close()
 
 
-def run_worker(settings, metadata, socket_path, status, stop, cutoff=None, reason_code=None):
+def run_worker(settings, metadata, socket_path, status, stop, cutoff=None, reason_code=None, begin=None):
     """Executed in a spawned process. IPC and ZMQ queues are bounded."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     import zmq
@@ -75,6 +75,20 @@ def run_worker(settings, metadata, socket_path, status, stop, cutoff=None, reaso
             subscriber.setsockopt(zmq.SUBSCRIBE, b'')
             subscriber.connect(f'tcp://127.0.0.1:{port}')
             sockets[subscriber] = camera
+        if begin is not None:
+            # Spawn/import/configure subscriptions during startup, without creating
+            # an episode or writing idle observations. Each camera queue is bounded.
+            status.send({'state': 'prepared'})
+            while not begin.wait(.05):
+                if stop.is_set():
+                    status.send({'state': 'idle_closed'})
+                    return
+            # Do not intentionally include frames buffered during preparation.
+            for subscriber in sockets:
+                try:
+                    subscriber.recv(zmq.NOBLOCK)
+                except zmq.Again:
+                    pass
         started_at = time.monotonic()
         store = EpisodeStore(settings['spool'], int(settings['max_cache_gb'] * 1e9),
                              int(settings['min_free_gb'] * 1e9),

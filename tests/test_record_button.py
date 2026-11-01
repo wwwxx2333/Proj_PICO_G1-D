@@ -14,44 +14,51 @@ from unittest.mock import AsyncMock, Mock, patch
 import numpy as np
 
 from g1d_pico.input import FreshTeleVuer, TeleVuer
-from g1d_pico.recording.button import LongPress, RecordingButton, RecordingRequests
+from g1d_pico.recording.button import RecordPress, RecordingButton, RecordingRequests
 from g1d_pico.recording.storage import EpisodeStore, verify_episode
 
 
-class LongPressTests(unittest.TestCase):
-    def test_one_hold_one_action_and_release_required(self):
-        button = LongPress()
-        self.assertFalse(button.update(False, 0, 0, 10, 10, .15))
-        results = [button.update(True, 0, 0, 10+i/10, 10+i/10, .15) for i in range(1, 32)]
-        self.assertEqual(sum(results), 1)
-        button.update(False, 0, 0, 14, 14, .15)
-        results = [button.update(True, 0, 0, 14+i/10, 14+i/10, .15) for i in range(1, 22)]
-        self.assertEqual(sum(results), 1)
+class PressTests(unittest.TestCase):
+    def test_press_starts_immediately_and_same_hold_cannot_stop(self):
+        button = RecordPress()
+        button.update(False, 10, 10, False)
+        self.assertEqual(button.update(True, 10.1, 10.1, False), 'start')
+        self.assertFalse(any(button.update(True, 10.1+i/10, 10.1+i/10, True)
+                             for i in range(1, 25)))
+        button.update(False, 12.6, 12.6, True)
+        self.assertIsNone(button.update(True, 12.7, 12.7, True))
+        actions = [button.update(True, 12.7+i/10, 12.7+i/10, True) for i in range(1, 25)]
+        self.assertEqual(actions.count('stop'), 1)
 
-    def test_held_at_start_or_after_disconnect_needs_release(self):
-        for disconnect in (False, True):
-            button = LongPress()
-            if disconnect:
-                button.update(False, 0, 0, 10, 10, .15)
-                button.update(True, 0, 0, 10.1, 10.1, .15)
-                button.update(True, 0, 0, 10.1, 10.5, .15)
-            self.assertFalse(any(button.update(True, 0, 0, 20+i/10, 20+i/10, .15)
-                                 for i in range(30)))
+    def test_short_press_during_recording_does_not_stop(self):
+        button = RecordPress()
+        button.update(False, 10, 10, True)
+        button.update(True, 10.1, 10.1, True)
+        self.assertIsNone(button.update(False, 10.2, 10.2, True))
+        self.assertTrue(any('STOP_CANCELLED' in text for text in button.messages))
 
-    def test_deflection_cancels_and_does_not_trigger_on_recentering_while_held(self):
-        button = LongPress()
-        button.update(False, 0, 0, 10, 10, .15)
-        button.update(True, 0, 0, 10.1, 10.1, .15)
-        button.update(True, .3, 0, 10.2, 10.2, .15)
-        self.assertFalse(any(button.update(True, 0, 0, 10.3+i/10, 10.3+i/10, .15)
-                             for i in range(20)))
+    def test_gap_cancels_stop_and_requires_release(self):
+        button = RecordPress()
+        button.update(False, 10, 10, True)
+        button.update(True, 10.1, 10.1, True)
+        self.assertIsNone(button.update(True, 10.1, 10.5, True))
+        self.assertTrue(any('输入中断' in text for text in button.messages))
+        self.assertFalse(any(button.update(True, 11+i/10, 11+i/10, True) for i in range(20)))
 
-    def test_short_press_or_repeated_snapshot_cannot_trigger(self):
-        button = LongPress()
-        button.update(False, 0, 0, 10, 10, .15)
-        self.assertFalse(button.update(True, 0, 0, 10.1, 10.1, .15))
-        self.assertFalse(any(button.update(True, 0, 0, 10.1, 10.1+i/100, .15)
-                             for i in range(120)))
+    def test_held_at_connection_and_repeated_snapshot_do_not_trigger(self):
+        button = RecordPress()
+        self.assertFalse(any(button.update(True, 10+i/10, 10+i/10, False) for i in range(20)))
+        button.update(False, 12, 12, True)
+        button.update(True, 12.1, 12.1, True)
+        self.assertFalse(any(button.update(True, 12.1, 12.1+i/100, True) for i in range(120)))
+
+    def test_contact_bounce_does_not_generate_second_action(self):
+        button = RecordPress()
+        button.update(False, 10, 10, False)
+        self.assertEqual(button.update(True, 10.1, 10.1, False), 'start')
+        button.update(False, 10.15, 10.15, False)
+        self.assertIsNone(button.update(True, 10.2, 10.2, False))
+        self.assertTrue(any('DEBOUNCE' in text for text in button.messages))
 
     def test_real_vuer_l3_field_is_separate_from_a_b_x_y_and_axes(self):
         class Snapshot(list):
@@ -73,12 +80,40 @@ class LongPressTests(unittest.TestCase):
     def test_no_recording_launcher_creates_no_socket(self):
         with patch.dict(os.environ, {}, clear=True), patch('socket.socket') as constructor:
             button = RecordingButton()
-            button.step(SimpleNamespace(), .15)
+            button.step(SimpleNamespace())
             button.close()
             constructor.assert_not_called()
 
 
 class RequestTests(unittest.TestCase):
+    def test_start_then_hold_stop_with_deflected_stick_and_no_control_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            server = RecordingRequests(Path(directory) / 'control.sock')
+            messages, actions = [], []
+            button = RecordingButton(str(server.path), messages.append)
+            state = {'state': 'waiting'}
+            def request(action):
+                actions.append(action)
+                state['state'] = 'recording' if action == 'start' else 'saving'
+                return state['state']
+            try:
+                base = time.monotonic()
+                for i in range(55):
+                    now = base+i*.1
+                    # First press remains held across the recorder's state change.
+                    # Second press stops despite displaced axes and pending homing.
+                    sample = SimpleNamespace(record_button=i not in (0, 30),
+                                             left_x=.9, left_y=-.8, received_at=now)
+                    with patch('g1d_pico.recording.button.time.monotonic', return_value=now):
+                        button.step(sample, control_ready=i < 30, preparation='homing')
+                        server.poll(request, Mock(), lambda: dict(state))
+                self.assertEqual(actions, ['start', 'stop'])
+                self.assertTrue(any('STOP_HOLD' in text for text in messages))
+                self.assertIsNone(button.pending)
+            finally:
+                button.close()
+                server.close()
+
     def test_retry_ack_deduplicates_and_busy_request_is_not_replayed(self):
         with tempfile.TemporaryDirectory() as directory:
             server = RecordingRequests(Path(directory) / 'control.sock')
@@ -88,9 +123,9 @@ class RequestTests(unittest.TestCase):
             try:
                 toggle = Mock(side_effect=['starting', 'busy'])
                 for identity in ('a'*32, 'a'*32, 'b'*32, 'b'*32):
-                    client.sendto(json.dumps({'id': identity, 'op': 'toggle',
+                    client.sendto(json.dumps({'id': identity, 'op': 'record', 'action': 'start',
                                              'time': time.monotonic()}).encode(), str(server.path))
-                    server.poll(toggle)
+                    server.poll(toggle, Mock(), lambda: {'state': 'waiting'})
                     reply = json.loads(client.recv(4096))
                     self.assertEqual(reply['result'], 'starting' if identity[0] == 'a' else 'busy')
                 self.assertEqual(toggle.call_count, 2)
@@ -109,10 +144,10 @@ class RequestTests(unittest.TestCase):
                 base = time.monotonic()
                 for i in range(14):
                     now = base+i*.1
-                    sample = SimpleNamespace(record_button=i>0, left_x=0, left_y=0, received_at=now)
+                    sample = SimpleNamespace(record_button=i>0, left_x=.9, left_y=-.8, received_at=now)
                     with patch('g1d_pico.recording.button.time.monotonic', return_value=now):
-                        button.step(sample, .15)
-                        server.poll(toggle)
+                        button.step(sample)
+                        server.poll(toggle, Mock(), lambda: {'state': 'waiting'})
                 self.assertEqual(toggle.call_count, 1)
                 self.assertIsNone(button.pending)
                 self.assertTrue(any('REC REQUEST' in text for text in messages))
