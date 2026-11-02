@@ -18,12 +18,13 @@ PC2 相机及控制观测 ──> PC2 限额缓存 ──任务结束后──> 
 
 Python 负责 PICO 输入、映射、双臂 IK 和流程协调，C++ 负责机器人消息和持续指令输出；独立录制进程保存 JPEG、状态、指令与日志。手部为扳机控制的开合预设。当前未接入底盘在实验室中的全局定位轨迹，也没有自主导航策略。
 
-## 常用启动命令
+## 运行流程
 
 已完成部署后，在 **PC2** 执行：
 
 ```bash
 cd /home/unitree/Proj/Proj_PICO_G1-D
+conda activate pico_g1d
 
 # 相机、底盘、立柱、腰部、双臂、左右 Dex3；不录制
 bash deploy/run_pc2_arms.sh --with-hands
@@ -46,12 +47,11 @@ cd /home/lab209/Proj/Proj_PICO_G1-D
 bash deploy/fetch_pc2_recordings.sh \
   --host unitree@192.168.1.118 \
   --destination /home/lab209/Datasets/G1D_Lab/raw \
-  --delete-after-verify
 ```
 
-只有内容校验通过的完整任务才会按该选项删除 PC2 源缓存。去掉 `--delete-after-verify` 可保留源数据；未完成目录按 [恢复说明](PROJECT_GUIDE.md#recovery) 处理。
+只有内容校验通过的完整任务才会按该选项删除 PC2 源缓存。 添加`--delete-after-verify` 可删除源数据，方便节约空间；未完成目录按 [恢复说明](PROJECT_GUIDE.md#recovery) 处理。
 
-fetch 现在复用单条 SSH 连接：正确认证一次后，本轮各条传输不再重复询问密码。加 `--with-video` 可在拉取结束后由主机生成三路拼接 MP4，默认放入 `G1D_Lab/videos/<episode_id>/overview.mp4`，原始数据不变。已经拉取的任务可单独转换：
+fetch 复用单条 SSH 连接：正确认证一次后，本轮各条传输不再重复询问密码。加 `--with-video` 可在拉取结束后由主机生成三路拼接 MP4，默认放入 `G1D_Lab/videos/<episode_id>/overview.mp4`，原始数据不变。已经拉取的任务可单独转换：
 
 ```bash
 bash deploy/make_recording_video.sh \
