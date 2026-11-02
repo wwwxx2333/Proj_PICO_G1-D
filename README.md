@@ -47,6 +47,7 @@ cd /home/lab209/Proj/Proj_PICO_G1-D
 bash deploy/fetch_pc2_recordings.sh \
   --host unitree@192.168.1.118 \
   --destination /home/lab209/Datasets/G1D_Lab/raw \
+  --with-video
 ```
 
 只有内容校验通过的完整任务才会按该选项删除 PC2 源缓存。 添加`--delete-after-verify` 可删除源数据，方便节约空间；未完成目录按 [恢复说明](PROJECT_GUIDE.md#recovery) 处理。
