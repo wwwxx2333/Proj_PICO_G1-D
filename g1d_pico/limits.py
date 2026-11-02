@@ -1,7 +1,7 @@
 """Verified SDK/model bounds, not recommended operating settings.
 
 Sources and the distinction from project trajectory limits are documented in
-deploy/OFFICIAL_LIMITS.md. Keep bridge/g1d_limits.hpp in sync; boundary tests and
+PROJECT_GUIDE.md section 8.1. Keep bridge/g1d_limits.hpp in sync; boundary tests and
 the offline bridge handshake check this before any DDS connection is opened.
 """
 import math

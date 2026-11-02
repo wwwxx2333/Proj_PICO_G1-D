@@ -1,5 +1,7 @@
 """Cross-language bounds and startup contract regressions, without robot I/O."""
 import json
+import io
+from contextlib import redirect_stderr
 from pathlib import Path
 import subprocess
 import tempfile
@@ -8,12 +10,12 @@ from unittest.mock import Mock, patch
 import xml.etree.ElementTree as ET
 
 from g1d_pico.arm_bridge import ArmBridge
+from g1d_pico.__main__ import parse_args
 from g1d_pico.body_config import BodyConfig
 from g1d_pico.bridge import AgvBridge
 from g1d_pico.bridge_contract import require_current_limits
 from g1d_pico.control import MappingConfig, MotionCommand, map_sticks
 from g1d_pico.limits import BRIDGE_LIMITS, valid_height_window
-from g1d_pico.remote_server import _command, _handshake
 from g1d_pico.recording.runner import load_settings
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,13 +34,28 @@ class OfficialLimitTests(unittest.TestCase):
         require_current_limits(self.binary, None)
         subprocess.run([str(self.binary)], check=True, timeout=5)
 
-    def test_full_sdk_endpoints_survive_mapping_remote_parser_and_real_cpp_parser(self):
+    def test_cli_defaults_to_pc2_local_control_without_arming(self):
+        with patch('sys.argv', ['g1d_pico']):
+            args = parse_args()
+        self.assertEqual(args.bridge_bin, ROOT/'bridge/build-arm64/g1d_agv_bridge')
+        self.assertEqual(args.network_interface, 'eth0')
+        self.assertEqual(args.robot_ip, '127.0.0.1')
+        self.assertFalse(args.live)
+
+    def test_retired_remote_control_option_is_rejected(self):
+        error = io.StringIO()
+        with patch('sys.argv', ['g1d_pico', '--live', '--remote-bridge-port', '8765']), \
+                redirect_stderr(error), self.assertRaises(SystemExit) as raised:
+            parse_args()
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn('unrecognized arguments', error.getvalue())
+
+    def test_full_sdk_endpoints_survive_mapping_and_real_cpp_parser(self):
         settings = BodyConfig(max_forward_mps=1.5, max_yaw_rps=.6, max_lift_normalized=1)
         for sign in (-1, 1):
             mapped = map_sticks(-sign, -sign, 0, -sign, settings)
             self.assertEqual(mapped, MotionCommand(sign*1.5, sign*.6, sign*1.))
             values = [str(mapped.forward_mps), str(mapped.yaw_rps), str(mapped.lift_normalized)]
-            self.assertEqual(_command(' '.join(values).encode()), mapped)
             result = subprocess.run([str(self.binary), '--command', *values],
                                     check=True, text=True, capture_output=True)
             self.assertEqual(list(map(float, result.stdout.split())), list(map(float, values)))
@@ -59,16 +76,14 @@ class OfficialLimitTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 BodyConfig(waist_pitch_min_rad=low, waist_pitch_max_rad=high)
 
-    def test_height_window_has_travel_bound_and_remote_base_compatibility(self):
+    def test_height_window_has_travel_bound(self):
         for low, high in [(0,.42), (.05,.47)]:
             BodyConfig(height_min_m=low, height_max_m=high)
-            self.assertEqual(_handshake(f'G1D1 both {low} {high}'.encode()), ('both',low,high))
+            self.assertTrue(valid_height_window(low, high))
         for low, high in [(0,.421), (.5,.4), (-.1,.3), (0,float('inf'))]:
             self.assertFalse(valid_height_window(low,high))
             with self.assertRaises(ValueError):
                 BodyConfig(height_min_m=low, height_max_m=high)
-            with self.assertRaises(ValueError): _handshake(f'G1D1 both {low} {high}'.encode())
-        self.assertEqual(_handshake(b'G1D1 base 0 1'), ('base', 0, 1))
 
     def test_checked_waist_positions_match_bundled_official_model(self):
         joints = {j.attrib['name']: j.find('limit').attrib

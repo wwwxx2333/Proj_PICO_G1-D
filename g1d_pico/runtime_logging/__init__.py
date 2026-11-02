@@ -10,7 +10,7 @@ def full_log_requested(command):
     # Values such as --instruction '--full-log' are data, not logger switches.
     takes_value = {'--instruction', '--scene', '--objects', '--robot-ip', '--cert', '--key',
                    '--bridge-bin', '--arm-bridge-bin', '--hand-bridge-bin', '--network-interface',
-                   '--remote-bridge-port', '--arm-urdf'}
+                   '--arm-urdf'}
     skip = False
     for argument in command:
         if skip:

@@ -31,3 +31,10 @@ Gravity assumes an upright mobile base, empty hands, and neutral finger joints;
 it is not payload or contact-force compensation. Joint trajectory homing adds
 quintic interpolation, PICO readiness/countdown, cancel, timeout and measured
 settling. There is no collision planner.
+
+Model comparison recorded on 2026-10-16: the 14 arm joints have matching
+origin, axis and limit fields in the referenced G1 and G1-D models.
+This does not establish equivalence of the base, waist, inertia or DDS
+interfaces. Runtime always loads the G1-D model.
+Reference G1 URDF SHA256: 8bbf006633fc50b616f665c7a970780cc296577a0adfd7d28b049e751c238735
+G1-D URDF SHA256: 46527573a7140c7129c3587ba5591f269974deb893a0b095ebca500028b8bf40

@@ -1,116 +1,611 @@
-# G1-D PICO 遥操作与实验室数据采集：完整项目说明
+# G1-D PICO 遥操作与实验室数据采集：项目说明
 
 核对日期：2026-11-01。
 
+本项目面向实验室内的人工遥操作数据采集：用 PICO 4 Ultra 控制 G1-D 的底盘、立柱、腰部、双臂与 Dex3-1 三指手，记录图像、机器人状态、控制目标、操作输入和日志，供后续模型训练使用。
+
 本文按当前本地主机源码和配置核对，覆盖 PC2 直接控制、PICO 操作、L3 分段录制、自动日志、训练数据 v2、主机标注与导出。PC2 实际运行的是同步过去的代码和在 PC2 编译的程序；修改主机文件不会自动更新机器人。
 
-主机项目：`/home/lab209/Proj/Proj_PICO_G1-D`。PC2 项目：`/home/unitree/Proj/Proj_PICO_G1-D`。
+开源地址：`https://github.com/wwwxx2333/Proj_PICO_G1-D`。
+G1-D上PC2地址：`/home/unitree/Proj/Proj_PICO_G1-D`。
 
 日常使用可先看第 3～5 节；维护代码看第 6～8 节；使用采集数据看第 9～13 节。首次配置环境见第 2 节，异常处理见第 14 节。
 
-## 1. 项目做什么，各设备负责什么
+## 1. 设备组件
 
-本项目面向实验室内的人工遥操作数据采集：用 PICO 4 Ultra 控制 G1-D 的底盘、立柱、腰部、双臂与 Dex3-1 三指手，记录图像、机器人状态、控制目标、操作输入和日志，供后续模型训练使用。
-
-| 设备/组件 | 当前职责 | 地址或位置 |
+| 设备/组件 | 职责 | 使用方式 |
 |---|---|---|
 | PICO 4 Ultra | 浏览器显示机器人头部画面；发送头显、两个手柄位姿和按钮/摇杆数据 | 与 PC2 在同一 Wi-Fi |
-| 主机 lab209 | 开发、编辑配置、SSH 终端、结束后拉取数据、标注和离线导出 | `/home/lab209/Proj/Proj_PICO_G1-D` |
-| PC2 | 运行 TeleVuer、Python 控制、IK、C++ 桥、独立录制与日志进程 | 已使用的无线地址 `192.168.1.118`；内部 eth0 为 `192.168.123.164` |
-| 机器人内部控制服务/PC1 | 接收 SDK/DDS 控制请求，提供底盘、关节等反馈 | 通过 PC2 内部 eth0 接入 |
-| TeleImager | 已有相机服务，提供头部和两侧腕部图像 | PC2，原有 `tv` 环境 |
+| G1-D（PC2） | 运行 TeleVuer、Python 控制、IK、C++ 桥、独立录制与日志进程 | 已使用的无线地址 `192.168.1.118`；内部 eth0 为 `192.168.123.164` |
+| G1-D（PC1） | 机器人内部控制服务，接收 SDK/DDS 控制请求，提供底盘、关节等反馈 | 通过 PC2 内部 eth0 接入 |
+| TeleImager | 已有相机服务，提供头部和两侧腕部图像 | PC2，原有 `tv` 环境（已在环境中，不用管） |
+| 主机 | 开发、编辑配置、SSH 终端、结束后拉取数据、标注和离线导出 | linux系统，或者windows+WSL |
 
-上述 IP 是本项目此前使用的地址，不是永久保证。PC2 的 DHCP 地址变化后，SSH、PICO 页面和 HTTPS 证书都要匹配新地址。日常控制不要求登录 PC1。
+上述 IP 是本项目当前使用的地址。PC2 的 DHCP 地址变化后，SSH、PICO 页面和 HTTPS 证书都要匹配新地址。日常控制不要求登录 PC1。
 
-```mermaid
-flowchart LR
-    P[PICO 浏览器与手柄] -->|Wi-Fi 位姿与按钮| T[PC2 TeleVuer / Python]
-    T -->|本机管道：目标与状态| C[PC2 C++ SDK2 桥]
-    C <-->|内部 eth0 / DDS 与 SDK| R[机器人内部控制服务]
-    CAM[PC2 TeleImager 相机服务] -->|本机图像| T
-    T -->|Wi-Fi 预览| P
-    T -->|非阻塞本机遥测| REC[独立录制进程]
-    C -->|非阻塞本机遥测| REC
-    CAM -->|本机 JPEG 流| REC
-    REC --> S[PC2 限额缓存]
-    S -->|全部控制结束后 SSH / rsync| H[主机 raw 数据]
-    H --> L[主机标注与训练导出]
-```
+组件工作流：
+![组件工作流](image.png)
 
 机器人运动控制不经过主机逐条转发。主机和机器人之间无需外接网线；机器人内部 eth0 仍保留。SSH 用于登录和查看输出，不承载 SDK 运动指令。采集期间没有新增图像上传到主机的线程，但 PICO 输入和预览仍使用 Wi-Fi。
 
-目前实现的是人工示范采集，没有自主语言导航、路径规划、地图定位、任务成功自动识别或模型训练入口。
+
+<a id="installation"></a>
 
 ## 2. 环境、首次准备与更新
 
-### 2.1 已经部署完成时
 
-如果 PC2 已经运行过本项目，不需要每次重建 conda 环境、生成证书或安装 IK。日常直接按第 3 节启动；本次数据 v2 更新涉及 C++，同步后需编译一次。
+### 2.1 G1-D机器人PC2准备
 
-PC2 运行环境为 `pico_g1d`，默认 Python 路径为：
+#### 2.1.1 有线连接
+首次可使用以下任一种方式：
+
+- 主机用网线连接机器人开发网口，再通过 SSH 登录 PC2。
+- 在 PC2 的本地显示器/键盘终端操作。
+
+使用网线时，把**主机连接机器人那块网卡**设为：
 
 ```text
-/home/unitree/miniconda3/envs/pico_g1d/bin/python
+IPv4 地址：192.168.123.222
+子网掩码：255.255.255.0（/24）
+默认网关：留空
+DNS：留空
 ```
-
-启动脚本默认使用这个路径，不会单凭当前终端激活了 `tv` 就切换解释器。特殊安装路径可用环境变量 `PICO_G1D_PYTHON=/实际路径/bin/python` 指定。
-
-相机服务继续使用原来的 `tv` 环境。本项目控制与录制使用 `pico_g1d`；不需要把 IK 依赖装进相机服务环境。
-
-### 2.2 尚未准备过 PC2 时
-
-PC2 项目应包含 `deps/unitree_sdk2`、`deps/televuer`、`assets/g1d/g1_d.urdf`、全部 Python/C++ 源码、六份 JSONC 配置，以及 deploy 脚本。SDK2 固定来源见 [SDK2_SOURCE.md](bridge/SDK2_SOURCE.md)，模型来源见 [SOURCE.md](assets/g1d/SOURCE.md)。
-
-依赖源码准备、基础构建工具、项目 HTTPS 证书等细节见 [PC2_DIRECT.md](deploy/PC2_DIRECT.md)；该文部分描述属于早期底盘阶段，当前功能清单以本文为准。依赖已放好后，在 **PC2** 执行一次：
+在**主机终端**登录：
 
 ```bash
-conda activate tv
+ssh unitree@192.168.123.164
+```
+
+这里的 `.164` 是本台机器人此前确认的 **PC2 内部地址**，不是所有 G1-D 的通用保证值。若无法登录，应先从设备资料或 PC2 本地终端确认地址；不要把 PC1 的 `.161` 直接当成 PC2 登录地址。
+
+登录后确认身份和平台：
+
+```bash
+whoami
+uname -m
+ip -4 -br addr
+```
+
+应看到用户 `unitree`、架构 `aarch64`，以及原有的内部网卡 `eth0`。以下无线配置命令只操作 `wlan0`，不修改机器人内部 `eth0`。
+
+#### 2.1.2 无线连接配置
+
+**执行位置：PC2，保留当前有线 SSH 或本地终端。**
+
+```bash
+nmcli device status
+sudo nmcli radio wifi on
+sudo nmcli device wifi rescan ifname wlan0
+nmcli device wifi list ifname wlan0
+
+sudo nmcli --ask device wifi connect 'WIFI名' ifname wlan0
+```
+
+按提示输入 Wi-Fi 密码。`--ask` 的用法见 [NetworkManager 官方示例](https://networkmanager.pages.freedesktop.org/NetworkManager/NetworkManager/nmcli-examples.html)。成功后会打印连接已激活。
+
+把当前 Wi-Fi 配置设为开机自动连接，并查看新地址：
+
+```bash
+wifi_profile=$(nmcli -g GENERAL.CONNECTION device show wlan0)
+sudo nmcli connection modify "$wifi_profile" connection.autoconnect yes
+ip -4 -br addr show wlan0
+ip -4 -br addr show eth0
+```
+
+例如：
+
+```text
+wlan0  UP  192.168.1.118/24
+eth0   UP  192.168.123.164/24
+```
+
+`wlan0` 是外部无线通信，`eth0` 是机器人内部通信，两者保留不同网段即可。不要把 `eth0` 改成 `192.168.1.x`，也不要为了无线控制将它禁用。
+
+如果 `nmcli device status` 中根本没有 `wlan0`，先确认无线网卡和驱动；当前启动脚本会读取名为 `wlan0` 的接口，不能只把本节命令中的网卡名换掉而忽略启动脚本。
+
+
+#### 2.1.3 准备项目目录
+执行位置：主机新开的本地终端，不是已经登录 PC2 的 SSH 终端。
+
+```bash
+ssh unitree@192.168.1.118 'mkdir -p /home/unitree/Proj/Proj_PICO_G1-D'
+```
+
+这条命令通过 SSH 在 PC2 创建根目录，执行完回到主机提示符。已有根目录会直接保留。后续从主机同步时，`rsync --relative` 会自动在 PC2 建立对应的源码子目录。
+
+其余目录按需要生成，无需预先手工建立：
+
+| 目录 | 何时生成 |
+|---|---|
+| `g1d_pico/`、`bridge/`、`deploy/`、`assets/`、`third_party/`、`config/`、`deps/` | 主机按部署清单同步时创建 |
+| `.local/install/` | 2.3.2 配置 Conda 环境、写入依赖约束时创建 |
+| `.local/https/` | 2.1.4 生成证书时由该段命令创建 |
+| `bridge/build-arm64/`、`.local/sdk2-build-arm64/`、`.local/sdk2-arm64/` | PC2 编译时创建 |
+| `logs/runtime/` | 启动程序时创建 |
+| `.local/recording_spool/` | 启动录制流程时创建
+
+#### 2.1.4 在 PC2 生成 PICO 网址访问证书
+
+PICO 页面由 PC2 上的 TeleVuer 提供，证书和私钥也保存在 PC2。**证书要包含 PC2 的无线 IP，不是主机 IP、PICO IP，也不是内部有线地址。**
+
+**执行位置：PC2。无需激活 `pico_g1d`。** 首先获取并核对最终运行网络中的无线地址：
+
+```bash
 cd /home/unitree/Proj/Proj_PICO_G1-D
-bash deploy/prepare_pc2_direct.sh 192.168.1.118
-bash deploy/prepare_pc2_arms.sh
-conda activate pico_g1d
+pc2_wifi_ip=$(ip -4 -o addr show dev wlan0 | awk '{split($4, a, "/"); print a[1]; exit}')
+printf 'PC2 Wi-Fi IP：%s\n' "$pc2_wifi_ip"
 ```
 
-第一个脚本从已有相机环境准备项目环境、安装项目使用的 TeleVuer、编译桥并准备证书。第二个脚本向 `pico_g1d` 安装 Pinocchio/CasADi 等 IK 依赖，预热求解器并编译。二者不启动机器人运动控制。
-
-已有证书但 IP 不匹配时，准备脚本会报错，不会自动覆盖证书。证书应按实际 PC2 地址维护。
-
-### 2.3 从主机同步现有项目代码
-
-先正常结束 PC2 的控制/录制程序。下面是已有部署的源码更新命令，在 **主机** 执行；不使用 `--delete`：
+确认输出正确后，执行以下整段命令。它会拒绝覆盖已有证书；如果已有可用证书，直接做下一步校验即可。
 
 ```bash
-cd /home/lab209/Proj/Proj_PICO_G1-D
+bash -s -- "$pc2_wifi_ip" <<'BASH'
+set -euo pipefail
+cert_dir=/home/unitree/Proj/Proj_PICO_G1-D/.local/https
+wifi_ip=$1
+if [[ -z "$wifi_ip" ]]; then
+    echo 'wlan0 没有 IPv4 地址，请先完成无线连接。' >&2
+    exit 1
+fi
+mkdir -p "$cert_dir"
+chmod 700 "$cert_dir"
+if [[ -e "$cert_dir/cert.pem" || -e "$cert_dir/key.pem" ]]; then
+    echo '证书目录已有文件，请先校验，不直接覆盖。' >&2
+    exit 1
+fi
+temp_dir=$(mktemp -d "$cert_dir/new.XXXXXX")
+umask 077
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout "$temp_dir/key.pem" \
+  -out "$temp_dir/cert.pem" \
+  -subj '/CN=g1d-pc2' \
+  -addext "subjectAltName=IP:$wifi_ip,IP:127.0.0.1,DNS:localhost"
+openssl verify -CAfile "$temp_dir/cert.pem" \
+  -verify_ip "$wifi_ip" "$temp_dir/cert.pem"
+mv "$temp_dir/key.pem" "$cert_dir/key.pem"
+mv "$temp_dir/cert.pem" "$cert_dir/cert.pem"
+rmdir "$temp_dir"
+BASH
+```
+
+这会生成：
+
+```text
+/home/unitree/Proj/Proj_PICO_G1-D/.local/https/cert.pem
+/home/unitree/Proj/Proj_PICO_G1-D/.local/https/key.pem
+```
+
+自签名 HTTPS 的做法参考 [TeleVuer 官方说明](https://github.com/unitreerobotics/televuer/blob/766de45e74373ae0ea66321d942ce538385655a5/README.md)，这里额外加入本项目启动检查需要的 IP SAN。`key.pem` 是私钥，留在 PC2，不复制给 PICO。
+
+校验当前 IP、有效期及证书/私钥是否匹配：
+
+```bash
+bash <<'BASH'
+set -euo pipefail
+cd /home/unitree/Proj/Proj_PICO_G1-D
+pc2_wifi_ip=$(ip -4 -o addr show dev wlan0 | awk '{split($4, a, "/"); print a[1]; exit}')
+if [[ -z "$pc2_wifi_ip" ]]; then
+    echo 'wlan0 没有 IPv4 地址，请先完成无线连接。' >&2
+    exit 1
+fi
+openssl x509 -in .local/https/cert.pem -noout -dates -ext subjectAltName
+openssl verify -CAfile .local/https/cert.pem \
+  -verify_ip "$pc2_wifi_ip" .local/https/cert.pem
+cert_public_key=$(openssl x509 -in .local/https/cert.pem -pubkey -noout)
+key_public_key=$(openssl pkey -in .local/https/key.pem -pubout)
+if [[ "$cert_public_key" != "$key_public_key" ]]; then
+    echo '证书与私钥不匹配，请检查文件。' >&2
+    exit 1
+fi
+echo '证书与私钥匹配。'
+BASH
+```
+
+应看到 `cert.pem: OK` 和“证书与私钥匹配”。如果 IP 改变或证书过期，先停止控制程序，将完整旧证书对备份到另一个目录，再重新生成：
+
+```bash
+cd /home/unitree/Proj/Proj_PICO_G1-D
+cert_backup=$(mktemp -d .local/https-backup.XXXXXX)
+mv .local/https/cert.pem .local/https/key.pem "$cert_backup/"
+```
+
+这个备份命令仅在原本两份文件都存在时使用。完成备份后，从本小节获取 IP 的步骤重新执行。PICO 需要重新接受新证书。
+
+**生成证书不等于启动网页服务。** 此时访问 `8012` 还不会出现页面，需要等 2.3 编译并启动程序之后再连接。
+
+
+### 2.2 主机：项目目录，主机环境与向PC2部署
+
+本节所有下载、Git 和 rsync 命令均在**主机**执行，不在 PC2 执行。使用 Windows 时，在已安装的 WSL2 Ubuntu 内操作，项目放在 WSL 的 `~/Proj/` 下。
+
+#### 2.2.1 配置主机工具和项目目录
+
+**执行位置：主机。**
+
+```bash
+sudo apt update
+sudo apt install -y git rsync openssh-client curl ca-certificates
+mkdir -p "$HOME/Proj"
+```
+
+当前主机已有项目，直接进入现有目录，保留尚未提交的代码和配置修改：
+
+```bash
+cd "$HOME/Proj/Proj_PICO_G1-D"
+```
+
+只有新主机且该目录不存在时，才从项目仓库获取：
+
+```bash
+git clone https://github.com/wwwxx2333/Proj_PICO_G1-D.git \
+  "$HOME/Proj/Proj_PICO_G1-D"
+cd "$HOME/Proj/Proj_PICO_G1-D"
+```
+
+创建依赖目录和主机长期数据目录：
+
+```bash
+mkdir -p deps
+mkdir -p "$HOME/Datasets/G1D_Lab/raw" "$HOME/Datasets/G1D_Lab/videos"
+```
+
+主机保留完整开发项目，包括测试、文档、离线数据处理脚本等；部署时只选择 PC2 需要的内容。
+
+#### 2.2.2 配置主机 Python 环境
+
+主机环境负责数据拉取、校验和后续离线处理，不需要为了 SSH 或部署而安装 PC2 的 IK、相机服务器或控制 SDK。下面仍使用 `pico_g1d` 作为环境名；**两台设备的同名环境相互独立，不同步整个环境目录。**
+
+如果主机已有 Conda，使用已有安装。当前 lab209 主机的加载命令是：
+
+```bash
+source "$HOME/anaconda3/etc/profile.d/conda.sh"
+conda env list
+```
+
+若安装在 `~/miniconda3` 或 `~/miniforge3`，将上面的路径换成对应目录。
+
+如果是完全没有 Conda 的新 Ubuntu/WSL 主机，可使用下面的可选安装。已有 Conda 时跳过；安装目录 `~/miniforge3` 必须尚不存在。[Miniforge 官方安装说明](https://github.com/conda-forge/miniforge)
+
+```bash
+bash <<'BASH'
+set -euo pipefail
+if [[ -e "$HOME/miniforge3" ]]; then
+    echo '~/miniforge3 已存在，请使用现有安装，不覆盖。' >&2
+    exit 1
+fi
+host_arch=$(uname -m)
+case "$host_arch" in
+    x86_64|aarch64) ;;
+    *) echo "本步骤不适用该主机架构：$host_arch" >&2; exit 1 ;;
+esac
+installer="Miniforge3-Linux-${host_arch}.sh"
+install_dir="$HOME/Proj/Proj_PICO_G1-D/.local/host-install"
+mkdir -p "$install_dir"
+cd "$install_dir"
+curl -fL -o "$installer" \
+  "https://github.com/conda-forge/miniforge/releases/latest/download/$installer"
+curl -fL -o "$installer.sha256" \
+  "https://github.com/conda-forge/miniforge/releases/latest/download/$installer.sha256"
+sha256sum -c "$installer.sha256"
+bash "$installer" -b -p "$HOME/miniforge3"
+BASH
+source "$HOME/miniforge3/etc/profile.d/conda.sh"
+```
+
+仅在主机尚无 `pico_g1d` 时创建：
+
+```bash
+conda create -y -n pico_g1d --override-channels -c conda-forge python=3.10 pip
+conda activate pico_g1d
+python --version
+python -c 'import sys; print(sys.executable)'
+```
+
+已有环境直接 `conda activate pico_g1d`。普通拉取和校验不需要额外 Python 包。若新建环境还要生成离线 MP4 预览，可选安装：
+
+```bash
+python -m pip install 'numpy==1.26.4' 'opencv-python-headless==4.11.0.86'
+```
+
+已有主机环境如果已经能 `import cv2`，无需再叠加安装另一种 OpenCV 包。主机的 `opencv-python-headless` 和 PC2 的 `opencv-python` 在不同环境中使用。
+
+#### 2.2.3 在主机准备固定版本的依赖源码（第三方依赖）
+
+下面三份依赖也由主机下载，之后同步到 PC2。当前项目使用的版本为：
+
+| 仓库 | 固定提交 |
+|---|---|
+| `unitreerobotics/unitree_sdk2` | `63096d0ac0c5d2dec9d6e0c22cd5233410ca2f36` |
+| `unitreerobotics/televuer` | `766de45e74373ae0ea66321d942ce538385655a5` |
+| `unitreerobotics/teleimager` | `57cf2a40572227273fa001cd17833b755331ec97` |
+
+**执行位置：主机。仅在对应目标目录不存在时执行该组 clone。**
+
+```bash
+cd "$HOME/Proj/Proj_PICO_G1-D"
+git clone https://github.com/unitreerobotics/unitree_sdk2.git deps/unitree_sdk2
+git -C deps/unitree_sdk2 checkout --detach 63096d0ac0c5d2dec9d6e0c22cd5233410ca2f36
+
+git clone https://github.com/unitreerobotics/televuer.git deps/televuer
+git -C deps/televuer checkout --detach 766de45e74373ae0ea66321d942ce538385655a5
+
+git clone https://github.com/unitreerobotics/teleimager.git deps/teleimager
+git -C deps/teleimager checkout --detach 57cf2a40572227273fa001cd17833b755331ec97
+```
+
+如果 `deps/` 下已有目录，先检查它的来源和版本，不覆盖、不反复 clone。若现有依赖在其他项目里，可保留原件，在这里准备对应版本的独立源码副本。通过 rsync 得到的无 `.git` 副本不能执行 `git checkout`；这不影响后续本地安装或编译。
+
+下列版本记录步骤针对上面正常克隆的三个仓库。它会检查固定提交及工作区修改，避免把修改后的源码标成未经改动的官方版本：
+
+```bash
+cd "$HOME/Proj/Proj_PICO_G1-D"
+python - <<'PY'
+from pathlib import Path
+import subprocess
+
+versions = {
+    'unitree_sdk2': '63096d0ac0c5d2dec9d6e0c22cd5233410ca2f36',
+    'televuer': '766de45e74373ae0ea66321d942ce538385655a5',
+    'teleimager': '57cf2a40572227273fa001cd17833b755331ec97',
+}
+lines = []
+for name, expected in versions.items():
+    path = Path('deps') / name
+    actual = subprocess.check_output(
+        ['git', '-C', str(path), 'rev-parse', 'HEAD'], text=True).strip()
+    changes = subprocess.check_output(
+        ['git', '-C', str(path), 'status', '--porcelain'], text=True).strip()
+    if actual != expected or changes:
+        raise SystemExit(f'{name} 版本或工作区不符，请先检查，不继续部署。')
+    lines.append(f'{name} {actual}')
+Path('deps/SOURCE_VERSIONS.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+print('依赖版本已核对并记录。')
+PY
+```
+
+#### 2.2.4 明确部署范围
+
+| 内容 | 是否部署到 PC2 | 原因 |
+|---|---|---|
+| `g1d_pico/` | 整个包部署 | 控制、录制、日志及拉取服务有共享导入，不能按名称任意拆除模块 |
+| `bridge/` 的 CMake、`.cpp`、`.hpp`、SDK/DDS 许可证 | 部署 | 由 PC2 编译 ARM64 桥及配套探针 |
+| `assets/g1d/`、`third_party/unitree_xr/` | 部署 | 运行模型、来源和许可证 |
+| `config/` 的六份配置 | 首次补齐 | 已部署 PC2 的配置默认保留，避免覆盖调参 |
+| 编译、控制、录制、日志入口脚本 | 按下面清单部署 | PC2 运行需要 |
+| 三份依赖源码及 SDK ARM64 库 | 部署 | PC2 本地安装/编译需要 |
+| `test/`、`tests/`、`diagnostics/`、其他开发文档 | 不部署 | 不属于当前运行依赖 |
+| 主机的拉取、视频生成入口脚本 | 不部署 | 在主机运行 |
+| `.git/`、主机 `.local/`、日志、数据集、Conda/venv 环境 | 不部署 | 主机历史、构建缓存、数据或环境不应覆盖 PC2 |
+| 主机编译产物和 SDK 的 x86_64 库 | 不部署 | PC2 使用 ARM64 编译结果和库 |
+| 主机上的 HTTPS 证书或私钥 | 不部署 | 使用 2.1.4 在 PC2 本地生成的证书 |
+
+`third_party/unitree_xr/` 是已改编代码的来源与许可说明，不是让 PC2 运行整套 `xr_teleoperate`。此方案不需要把整个官方遥操作工程复制到 PC2。
+
+#### 2.2.5 从主机按清单部署到 PC2
+
+**执行位置：主机。先正常结束 PC2 上正在运行的控制和录制会话，再同步。**
+
+每次新开主机终端执行部署时，先设置以下变量。IP 按实际值修改：
+
+```bash
+cd "$HOME/Proj/Proj_PICO_G1-D"
+pc2_host=unitree@192.168.1.118
+pc2_root=/home/unitree/Proj/Proj_PICO_G1-D
+```
+
+第一组：同步运行源码、模型及必要脚本，保留相对目录层级。PC2 上缺少的子目录由 rsync 自动创建，不需要先登录 PC2 逐个建目录：
+
+```bash
 rsync -av --relative \
   --exclude='__pycache__/' --exclude='*.pyc' \
-  --exclude='bridge/build/' --exclude='bridge/build-arm64/' --exclude='bridge/lib/' \
-  g1d_pico/ bridge/ deploy/ README.md PROJECT_GUIDE.md \
-  unitree@192.168.1.118:/home/unitree/Proj/Proj_PICO_G1-D/
+  g1d_pico/ \
+  bridge/CMakeLists.txt bridge/*.cpp bridge/*.hpp bridge/*LICENSE \
+  assets/g1d/ third_party/unitree_xr/ \
+  deploy/build_on_pc2.sh deploy/runtime_logging.sh \
+  deploy/run_pc2_base.sh deploy/run_pc2_arms.sh deploy/record_pc2.sh \
+  "$pc2_host:$pc2_root/"
+```
 
+第二组：补齐六份配置，已有配置不覆盖：
+
+```bash
 rsync -av --relative --ignore-existing \
   config/body.jsonc config/arms.jsonc config/recording.jsonc \
   config/logging.jsonc config/dataset.jsonc config/calibration.jsonc \
-  unitree@192.168.1.118:/home/unitree/Proj/Proj_PICO_G1-D/
+  "$pc2_host:$pc2_root/"
 ```
 
-第二条只补缺少的配置，不覆盖 PC2 已有调参。若确实要用主机某份配置替换 PC2 文件，单独同步该文件，例如：
+第三组：同步固定版本依赖，排除 Git 元数据、构建缓存和 SDK 的 x86_64 库：
 
 ```bash
-rsync -av --relative config/body.jsonc \
-  unitree@192.168.1.118:/home/unitree/Proj/Proj_PICO_G1-D/
+rsync -av --relative \
+  --exclude='.git' --exclude='.venv/' \
+  --exclude='__pycache__/' --exclude='*.pyc' \
+  --exclude='build/' --exclude='dist/' --exclude='*.egg-info/' \
+  --exclude='/deps/unitree_sdk2/lib/x86_64/' \
+  --exclude='/deps/unitree_sdk2/thirdparty/lib/x86_64/' \
+  deps/unitree_sdk2/ deps/televuer/ deps/teleimager/ deps/SOURCE_VERSIONS.txt \
+  "$pc2_host:$pc2_root/"
 ```
 
-现有模型未变化时不用重复复制；若代码更新同时改了 URDF，需把实际采用的 `assets/g1d/` 同步过去。不要把主机的 `.local`、日志、缓存、证书私钥和 x86 二进制复制覆盖到 PC2。
+不要排除 SDK 的全部 `lib/` 或所有 `.so`：PC2 编译依赖 `lib/aarch64/libunitree_sdk2.a` 和 `thirdparty/lib/aarch64/` 下的 DDS 库。官方 SDK 按目标架构选择这些库，见 [固定版本构建定义](https://github.com/unitreerobotics/unitree_sdk2/blob/63096d0ac0c5d2dec9d6e0c22cd5233410ca2f36/CMakeLists.txt)。
 
-涉及 `.cpp` / `.hpp` 时，在 **PC2** 编译：
+以上命令不使用 `--delete`，也不发送整个项目根目录，因此不会覆盖 PC2 的 `.local/https`、录制缓存或编译结果。PC2 的依赖目录没有 `.git` 是预期行为；版本通过 `deps/SOURCE_VERSIONS.txt` 查看，不在 PC2 执行 Git 命令。
+
+如果 PC2 曾经手工修改过这些依赖，先保留旧目录再部署，避免无 `--delete` 的增量同步残留旧文件。首次部署时，`deps/` 及其子目录由这次同步自动建立。
+
+日常只改项目 Python/C++ 时，重新执行第一组即可。修改模型时第一组也会同步模型；修改 C++ 后按 2.3 重编译。固定依赖未变化时不用重新同步第三组，也不用重装环境或重新生成证书。
+
+需要明确替换 PC2 某份配置时，单独同步那一个文件，例如：
 
 ```bash
-conda activate pico_g1d
+rsync -av --relative config/body.jsonc "$pc2_host:$pc2_root/"
+```
+
+这条会覆盖 PC2 的 `body.jsonc`，仅在确定要采用主机这份参数时执行。
+
+### 2.3 PC2：创建 Conda 环境、安装依赖与编译
+
+#### 2.3.1 核对主机部署的代码和已有证书
+
+**先在主机登录：**
+
+```bash
+ssh unitree@192.168.1.118
+```
+
+**以下执行位置：PC2。此处只核对文件，还不需要项目环境。**
+
+```bash
 cd /home/unitree/Proj/Proj_PICO_G1-D
+
+cat deps/SOURCE_VERSIONS.txt
+ls config/*.jsonc
+ls assets/g1d/g1_d.urdf
+ls deps/unitree_sdk2/lib/aarch64/libunitree_sdk2.a
+ls deps/unitree_sdk2/thirdparty/lib/aarch64/libddsc.so
+ls deps/unitree_sdk2/thirdparty/lib/aarch64/libddscxx.so
+ls deps/televuer/pyproject.toml deps/teleimager/pyproject.toml
+ls .local/https/cert.pem .local/https/key.pem
+```
+
+确认这些文件已经到位后，继续创建项目环境。若缺少文件，先回到 2.2.5 补齐部署。
+
+#### 2.3.2 在现有 Conda 中创建新的 pico_g1d 环境
+
+当前 PC2 已有 `/home/unitree/miniconda3`，先加载现有 Conda：
+
+**执行位置：PC2。**
+
+```bash
+source /home/unitree/miniconda3/etc/profile.d/conda.sh
+conda --version
+conda env list
+```
+
+这里使用 PC2 已安装的 Conda，不安装或重装 Conda。如果原有 Conda 位于其他目录，使用它实际的 `etc/profile.d/conda.sh` 路径即可。
+
+**仅在没有 `pico_g1d` 环境时新建：**
+
+```bash
+conda create -y -n pico_g1d --override-channels -c conda-forge \
+  python=3.10 pip setuptools wheel \
+  numpy=1.26.4 pinocchio=3.1.0 casadi=3.6.7
+
+conda activate pico_g1d
+python --version
+python -c 'import sys; print(sys.executable)'
+```
+
+预期 Python 为 3.10，解释器为 `/home/unitree/miniconda3/envs/pico_g1d/bin/python`。若已有同名环境，先激活并核对，不重复创建或删除。
+
+这些依赖各自用于：
+
+| 依赖 | 用途 |
+|---|---|
+| Python 3.10 | 与本项目及固定版本的 TeleImager/TeleVuer 兼容 |
+| NumPy 1.26.4 | 数组运算，保持当前依赖的 NumPy 1.x 兼容性 |
+| Pinocchio 3.1.0 | 读取机器人模型，进行运动学计算 |
+| CasADi 3.6.7 | IK 优化求解；与 `pinocchio.casadi` 配合 |
+
+使用上面的 conda-forge Pinocchio，不要用 `pip install pinocchio` 替代。此时项目和依赖源码已由主机部署到位，创建环境后即可连续完成本地依赖安装和编译。
+
+创建后续 pip 安装约束文件：
+
+```bash
+cd /home/unitree/Proj/Proj_PICO_G1-D
+mkdir -p .local/install
+cat > .local/install/pip-constraints.txt <<'EOF'
+numpy==1.26.4
+opencv-python==4.11.0.86
+vuer==0.0.60
+casadi==3.6.7
+EOF
+
+python -m pip install --upgrade pip 'setuptools>=64' wheel
+```
+
+接着执行 **2.3.3**，在同一个 `pico_g1d` 环境中安装本地 Python 依赖。新环境独立创建，原有 `tv` 相机服务保持原环境。
+
+#### 2.3.3 安装本地 Python 依赖并预热 IK
+
+**执行位置：PC2，沿用刚创建并激活的 `pico_g1d` 环境和项目目录。** 从主机传来的本地源码安装：
+
+```bash
+python -m pip install -c .local/install/pip-constraints.txt \
+  -e ./deps/televuer -e ./deps/teleimager
+python -m pip check
+```
+
+这里的 `-e` 表示可编辑安装，运行时会读取这两个源码目录。不要在安装后移动或删除它们。本步骤可能从 pip 源下载其声明的 Python 包，但不会从 GitHub 拉取项目源码。
+
+不安装 `teleimager[server]`：新环境只使用 TeleImager 客户端，原有 `tv` 相机服务继续工作。本项目根目录没有用于安装的 `pyproject.toml` / `setup.py`，**不要在项目根目录执行 `pip install -e .`**。
+
+检查依赖导入和 IK 预热：
+
+```bash
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+python - <<'PY'
+import inspect
+import sys
+from pathlib import Path
+import numpy
+import cv2
+import zmq
+import casadi
+from pinocchio import casadi as cpin
+from televuer.televuer import TeleVuer
+from teleimager.image_client import ImageClient
+from g1d_pico.arm_ik import DualArmIK
+
+print('Python:', sys.executable)
+assert {'cert_file', 'key_file'} <= set(inspect.signature(TeleVuer).parameters)
+assert {'host', 'request_bgr'} <= set(inspect.signature(ImageClient).parameters)
+ik = DualArmIK(Path('assets/g1d/g1_d.urdf'))
+print('环境导入与 IK 预热完成。')
+PY
+```
+
+这一步只构建模型、预热求解器，不向机器人发送运动命令。如果此处失败，先解决依赖问题，再进行编译和启动。
+
+#### 2.3.4 在 PC2 编译 ARM64 控制程序
+
+**执行位置：PC2，仍在 `pico_g1d` 环境和项目目录。**
+
+```bash
 bash deploy/build_on_pc2.sh deps/unitree_sdk2
 ```
 
-编译结果位于 `bridge/build-arm64/`，配套 DDS 库位于其 `lib/`。只改 Python 或合法配置值不需要 C++ 编译，但需同步并重启。关节 dq/tau_est 记录需要更新后的双臂/手部二进制；旧二进制不会自动产生这些新字段。
+该脚本会：
+
+1. 使用传入的 SDK2 源码和 ARM64 库，在项目 `.local/` 中配置并安装 SDK。
+2. 编译底盘、双臂、三指手控制桥和配套只读探针。
+3. 把同版本 ARM64 DDS 动态库放到 `bridge/build-arm64/lib/`。
+
+**编译过程不会启动机器人运动。** 不需要手写单文件 `c++ -I... -L...` 命令，也不要把主机 x86_64 的编译结果传过来代替。
+
+检查产物：
+
+```bash
+file bridge/build-arm64/g1d_agv_bridge
+file bridge/build-arm64/g1d_arm_bridge
+file bridge/build-arm64/g1d_hand_bridge
+ls -l bridge/build-arm64/lib/
+```
+
+应显示 ARM aarch64 可执行文件，库目录包含 `libddsc.so`、`libddscxx.so` 和对应 `.so.0` 链接。
+
+保存当前环境记录：
+
+```bash
+conda list --explicit > .local/install/conda-explicit-linux-aarch64.txt
+python -m pip freeze > .local/install/pip-freeze.txt
+```
+
+ARM64 的 Conda 清单不能直接用于 x86_64 主机安装；editable 路径也必须对应实际部署位置。完成本节后，按第 3 节启动；已有可用环境时不需要重新创建。
+
+只改 Python、Shell 或配置值时，不需要重新编译 C++，同步后重启程序即可；修改 `.cpp`、`.hpp`、SDK 或 CMake 时需要重新编译。
+
 
 ## 3. 日常如何启动
 
@@ -172,6 +667,8 @@ bash deploy/record_pc2.sh \
 
 这条命令启动后先准备控制、归位和录制进程，**不会立即开始保存 episode**。普通 `run_pc2_arms.sh` / `run_pc2_base.sh` 不创建 episode，但会保存整场运行日志。
 
+<a id="run-options"></a>
+
 ### 3.4 启动选项
 
 | 入口/选项 | 作用 |
@@ -197,7 +694,7 @@ bash deploy/record_pc2.sh --full-log \
   -- --with-hands
 ```
 
-速度、死区、升降范围等固定从配置文件读取，不接受 `--config`、`--arm-config`、`--body-config` 或旧速度覆盖参数。完整底层选项参考 [RUN_OPTIONS.md](deploy/RUN_OPTIONS.md)。
+速度、死区、升降范围等固定从配置文件读取，不接受 `--config`、`--arm-config`、`--body-config` 或旧速度覆盖参数。底层入口的全部选项可用 `python -m g1d_pico --help` 查看；常用启动方式见上表。
 
 ### 3.5 PICO 连接和启动归位
 
@@ -212,6 +709,8 @@ PICO 浏览器打开该地址，使用已配置的 HTTPS 信任方式，进入�
 启用双臂且没有 `--skip-home` 时，PICO 数据就绪、两摇杆回中、两侧握松开后，程序倒计时约 3 秒并执行双臂关节归零。**这一启动归位不需要先按 A。** 归位过程中底盘停止、手部不接受操作，B 可取消。
 
 归位针对 14 个手臂关节，不把腰部、立柱或手指归零。它是关节空间平滑轨迹，不是从任意缠绕姿态出发的避碰规划；开始前应让手臂空载并留出运动空间。完成后提示 `HOME_DONE / WAITING_FOR_A`。录制入口还会等待预热完成，显示 `REC READY`。
+
+<a id="controls"></a>
 
 ## 4. PICO 按键与机器人操作
 
@@ -260,6 +759,8 @@ A 接管时三指手先保持实际位置，不会因为扳机为零就立即全
 | `Control fault: ...` 后程序退出 | 读取完整日志查明桥/反馈故障；修复后重新启动，不能只按 A |
 
 手部缺帧不再因为达到 250 ms 就全局退出；PICO 输入、双臂/俯仰反馈等原有保护仍存在。`dataset.jsonc` 的 0.25 秒质量阈值只标记数据，不改变机器人保护或按键状态。
+
+<a id="recording"></a>
 
 ## 5. 一次启动如何采集多条任务
 
@@ -325,7 +826,7 @@ Ctrl+C 首次用于正常退出。收尾阶段可能需要刷盘，尤其长任�
 | 自动日志监督 | 接收输出，分别写文件和筛选终端显示 | 不发送运动指令 |
 | 主机离线工具 | 拉取、校验、恢复、标注、对齐导出 | 不启动机器人控制 |
 
-Python 中的 bridge 类是 C++ 子进程的启动/管道封装，不能把它与主机到 PC2 的网络转发混为一谈。当前控制直接在 PC2 上运行；`remote_server.py` 和 RemoteAgvBridge 是旧方案保留代码。
+Python 中的 bridge 类是 C++ 子进程的启动/管道封装，不能把它与主机到 PC2 的网络转发混为一谈。当前控制直接在 PC2 上运行，C++ 控制桥由 Python 通过本机管道启动和通信。
 
 ### 6.2 完整采集的主要进程
 
@@ -352,7 +853,7 @@ teleimager.service：机器人原有独立相机服务
 - **腰部**：右摇杆横轴驱动 yaw；切到 PITCH 后纵轴驱动俯仰。双臂按“随躯干移动”的方式控制，不固定在世界空间。G1-D pitch 使用独立官方腰部接口，不把 G1 的 lowstate[14] 当作其反馈。
 - **手部**：食指扳机生成开合预设，C++ 统一处理速度、目标领先量、受阻保持和释放。拇指展开角保持参考；不是通过手柄姿态逐个推算七个手指关节。
 
-IK 方法参考官方 xr_teleoperate 并适配 G1-D 模型；模型、腰部消息、按键、录制与保护逻辑属于本项目实现。来源和差异见 [NOTICE.md](third_party/unitree_xr/NOTICE.md) 与 [MODEL_COMPARISON.md](third_party/unitree_xr/MODEL_COMPARISON.md)。
+IK 方法参考官方 xr_teleoperate 并适配 G1-D 模型；模型、腰部消息、按键、录制与保护逻辑属于本项目实现。来源、适配差异和模型核对摘要见 [IK 来源声明](third_party/unitree_xr/NOTICE)，模型来源见 [模型来源声明](assets/g1d/SOURCE)。
 
 当前本地双臂 Python 控制循环设置为 20 Hz，C++ 持续输出与反馈记录各有自己的周期，相机保存为每路最高 20 FPS；三者并非同一个频率。实际运行可能受处理负载影响。
 
@@ -378,12 +879,11 @@ Proj_PICO_G1-D/
 │   ├── arm_ik.py / arm_math.py       IK、坐标与侧握参考
 │   ├── arm_home.py                   14 关节平滑归零轨迹
 │   ├── hands.py                      Dex3 扳机开合与手部状态协调
-│   ├── bridge.py                     底盘 C++ 进程封装；也保留旧远程封装
+│   ├── bridge.py                     底盘 C++ 进程封装
 │   ├── arm_bridge.py / hand_bridge.py 上身和手部 C++ 管道封装
 │   ├── body_config.py / arm_config.py 配置字段验证
 │   ├── config_paths.py / config_io.py 固定路径与 JSONC 解析
 │   ├── limits.py / bridge_contract.py 范围常量、Python/C++ 版本核对
-│   ├── remote_server.py              旧远程转发方案
 │   ├── runtime_logging/              日志监督、文件轮换、队列与终端筛选
 │   └── recording/
 │       ├── __main__.py               run/verify/recover/fetch/annotate/export 入口
@@ -401,7 +901,7 @@ Proj_PICO_G1-D/
 │       ├── annotations.py            主机独立任务标注
 │       └── export.py                 主机时间对齐与训练中间格式
 ├── bridge/
-│   ├── CMakeLists.txt / SDK2_SOURCE.md 构建入口和 SDK 来源
+│   ├── CMakeLists.txt                  构建入口；SDK 版本见第 2 节
 │   ├── g1d_agv_bridge.cpp            底盘/立柱接口
 │   ├── g1d_arm_bridge.cpp            双臂/腰部接口
 │   ├── g1d_hand_bridge.cpp           单侧 Dex3 接口，启动两实例
@@ -415,7 +915,7 @@ Proj_PICO_G1-D/
 │   └── build-arm64/                  PC2 编译生成的五个程序及 lib/
 ├── assets/g1d/                       实际模型、来源和许可证
 ├── third_party/unitree_xr/           上游参考说明与许可证
-├── deploy/                          准备、编译、启动、传输脚本及专题文档
+├── deploy/                          编译、启动、日志和传输脚本
 ├── tests/                           Python 回归与 C++ 离线测试
 ├── deps/                            PC2 的 SDK2/TeleVuer 等依赖源码
 ├── logs/runtime/                    整场运行日志
@@ -427,7 +927,9 @@ Proj_PICO_G1-D/
     └── recording_spool/             PC2 录制缓存
 ```
 
-这是职责结构，`deps/`、`build-arm64/`、`.local/` 等在 PC2 准备或运行后生成，不要求主机也有相同内容。项目目前从源码目录启动；准备脚本中的 `pip install -e` 安装 TeleVuer 依赖，不是把本项目本身安装成包。
+这是职责结构，`deps/`、`build-arm64/`、`.local/` 等在 PC2 准备或运行后生成，不要求主机也有相同内容。项目目前从源码目录启动；第 2.3 节中的 `pip install -e` 安装 TeleVuer/TeleImager 依赖，不是把本项目本身安装成包。
+
+<a id="configuration"></a>
 
 ## 8. 配置文件怎么改
 
@@ -462,9 +964,105 @@ Proj_PICO_G1-D/
 | 质量报告反馈年龄阈值 | 0.25 s，仅用于标记 |
 | 运行日志上限 | 100 份 |
 
-软件允许范围、官方接口范围、模型角度限制和项目建议运行值是不同概念。字段注释与 [OFFICIAL_LIMITS.md](deploy/OFFICIAL_LIMITS.md) 说明了对应来源，本文不把当前运行设置称为官方最大值。
+软件允许范围、官方接口范围、模型角度限制和项目建议运行值是不同概念。字段注释与 [第 8.1 节](#parameter-limits) 说明了对应来源，本文不把当前运行设置称为官方最大值。
 
 没有真实标定时保持 null，不填虚构的单位阵。填写 calibration.jsonc 只改变归档信息，不自动改变控制坐标，也不会启动定位系统。不要在旧任务尚未传输时更改 recording.jsonc 的 spool，否则 fetch 会查找新位置，旧数据仍留在原处。
+
+<a id="parameter-limits"></a>
+
+### 8.1 参数范围与来源
+
+下列范围区分 SDK 接口、模型字段和项目约束，不等于建议运行速度。
+
+#### 核验依据
+
+1. [宇树 SDK2 AgvClient](https://github.com/unitreerobotics/unitree_sdk2/blob/main/include/unitree/robot/g1/agv/g1_agv_client.hpp)：`Move` 的 `vx` 为 [-1.5, 1.5] m/s，`vyaw` 为 [-0.6, 0.6] rad/s；不支持横向 `vy`；`HeightAdjust` 的 `vz` 为 [-1, 1] 归一化值。项目固定 SDK 提交 `63096d0ac0c5d2dec9d6e0c22cd5233410ca2f36` 的相应注释一致。
+2. [G1-D 官网规格](https://www.unitree.com/cn/G1-D/)：旗舰版最高底盘速度 1.5 m/s；整机高度 1260～1680 mm，差值为 0.42 m；腰部 Z 轴 ±155°、Y 轴 -2.5°～135°。
+3. [官方 G1-D URDF](https://github.com/unitreerobotics/unitree_ros/blob/master/robots/g1_d_description/g1_d.urdf)：角度校验使用模型中的弧度数值，下表说明具体关节。项目已有模型相关数值与核验一致，不替换模型文件。
+4. [官方腰部控制例程](https://github.com/unitreerobotics/unitree_sdk2/blob/main/example/g1/g1d/g1d_waist_example.cpp)及[双臂例程](https://github.com/unitreerobotics/unitree_sdk2/blob/main/example/g1/g1d/g1d_arm_example.cpp)演示控制接口；其中演示角度、增益和周期不等于官方公布的全部合法范围。
+
+**立柱速度的官方资料存在差异：**官网写约 60 mm/s，SDK 注释写 `velocity = vz × 76.5 mm/s`。本程序依照两者没有歧义的接口输入 [-1, 1] 校验，不把任一速度系数视为已实测标定。0.42 m 是行程，不能仅用整机高度差证明 `rt/hispeed_state.y` 的绝对零点；本机沿用的反馈窗口 0～0.42 m 应以实机反馈标定为准。
+
+#### 身体配置：16 项
+
+下表中的范围是代码实际接受的范围。标注“项目”的项没有对应的官方配置范围，保留现有工程约束并明确来源；未将其伪装成官方规格。
+
+| 字段 | 实际接受范围 | 依据与生效方式 |
+|---|---|---|
+| `deadzone` | 0 ≤ 值 < 1 | 项目摇杆映射；超死区后重新缩放 |
+| `max_forward_mps` | 0～1.5 m/s | 官方 SDK 的 vx 幅值；0 禁用此轴输出 |
+| `max_yaw_rps` | 0～0.6 rad/s | 官方 SDK 的 vyaw 幅值；0 禁用此轴输出 |
+| `max_lift_normalized` | 0～1 | 官方 SDK 的 vz 幅值；0 禁用升降输出 |
+| `height_min_m` | 有限数且 ≥ 0，与 max 联合校验 | 项目反馈坐标窗口，非整机高度；官网未确定反馈零点 |
+| `height_max_m` | 大于 min，且 max − min ≤ 0.42 m | 按官方整机高度差约束窗口跨度；按反馈坐标校验跨度 |
+| `waist_yaw_limit_rad` | 0～2.7053 rad | 官方 URDF 对称角度幅值，完整关节约 ±155°；0 表示窗口收至零位，不是关闭电机 |
+| `waist_yaw_speed_rad_s` | 0.02～0.20 rad/s | 项目目标轨迹速度约束；不是官方模型速度上限 |
+| `waist_yaw_accel_rad_s2` | 0.05～0.50 rad/s² | 项目目标轨迹加速度；官方未公布同名参数范围 |
+| `waist_pitch_min_rad` | -0.04363 ≤ min < max | 官方 URDF 的俯仰下界，约 -2.5° |
+| `waist_pitch_max_rad` | min < max ≤ 2.3562 rad | 官方 URDF 的俯仰上界，约 135°；窗口不必包含 0 |
+| `waist_pitch_speed_rad_s` | 0.01～0.15 rad/s | 项目目标轨迹速度约束；不是官方模型速度上限 |
+| `waist_pitch_accel_rad_s2` | 0.02～0.30 rad/s² | 项目目标轨迹加速度 |
+| `waist_pitch_max_error_rad` | 0.05～0.15 rad | 项目目标与实测位置的允许领先量 |
+| `waist_pitch_stall_timeout_s` | 0.5～5 s | 项目停滞判定时长，非 DDS 缺帧超时 |
+| `waist_pitch_min_progress_rad` | 0.001～0.020 rad | 项目同向进展判据 |
+
+Python 和 C++ 的底盘/立柱速度边界一致。俯仰端点同时检查 min < max，防止单项合法但窗口倒置。数值须有限且不能是布尔值。高度跨度校验有 1e-7 m 的浮点舍入容差。
+
+#### 双臂配置：9 项
+
+这九项是本项目手柄映射、轨迹生成、归位和滤波参数。官方未提供与这些字段对应的配置范围，因此保留项目允许值；它们并非官方关节速度或工作空间极限。
+
+| 字段 | 项目允许范围 | 说明 |
+|---|---|---|
+| `joint_speed_rad_s` | 0.05～1.0 rad/s | 每侧双臂关节目标变化速率上限 |
+| `home_speed_rad_s` | 0.05～0.20 rad/s | 归位目标速率；归位轨迹仍有至少 4 s 时长 |
+| `control_hz` | 10～60 Hz | 启用双臂时的共享 Python 循环目标频率，不保证实际频率 |
+| `position_scale` | 0.1～1.0 | 手柄相对平移缩放 |
+| `clutch_translation_m` | 0.1～0.8 m | 单次侧握相对位移阈值，不是臂展 |
+| `clutch_rotation_rad` | 0.2～2.0 rad | 单次侧握相对旋转阈值 |
+| `cartesian_speed_m_s` | 0.05～0.8 m/s | IK 前末端目标平移速率上限 |
+| `rotation_speed_rad_s` | 0.2～3.0 rad/s | IK 前末端目标旋转速率上限 |
+| `filter_weights` | 1～8 个正有限数，和为 1 | 从新到旧；和使用 1e-6 绝对容差 |
+
+C++ 双臂速率上限由 Python 按 `max(0.30, 1.2 × 跟随速度, 1.2 × 归位速度)` 传入，最高 1.2 rad/s；它为 Python 目标留出余量。实际目标仍受末端限速、IK 可达性、关节限速和滤波共同影响。
+
+官方 URDF 的位置与速度字段如下（速度列是模型字段，不是推荐运行参数）：
+
+| 关节 | 官方模型位置范围（rad） | 模型 velocity（rad/s） |
+|---|---|---:|
+| 腰部左右转 `torso_Joint` | -2.7053～2.7053 | 5 |
+| 腰部俯仰 `Yaw_Joint`（轴为 Y） | -0.04363～2.3562 | 5 |
+| 左右肩 pitch | -3.0892～2.6704 | 37 |
+| 左肩 roll / 右肩 roll | -1.5882～2.2515 / -2.2515～1.5882 | 37 |
+| 左右肩 yaw | -2.618～2.618 | 37 |
+| 左右肘 | -1.0472～2.0944 | 37 |
+| 左右腕 roll | -1.972222054～1.972222054 | 37 |
+| 左右腕 pitch / yaw | -1.614429558～1.614429558 | 22 |
+
+双臂已有的 0.02 rad 关节端点内缩余量仍保留；上述表格是原始模型范围，不能把余量后的目标范围误报为官方机械范围。Dex3 当前没有独立 JSONC 配置项，不改手指姿态、力矩和抓握逻辑。
+
+#### 录制配置：6 项
+
+这些是本项目数据保存设置，不存在“机器人官方允许帧率/缓存配额”这一对应范围。
+
+| 字段 | 项目允许范围 | 生效条件 |
+|---|---|---|
+| `spool` | 非空路径字符串 | 相对项目根目录，或绝对路径、~；目录仍受文件权限限制 |
+| `max_cache_gb` | 0.01～10000 GB | 缓存总配额；实际受可用磁盘限制 |
+| `min_free_gb` | 0～10000 GB | 文件系统预留空间 |
+| `image_fps` | 1～60 FPS | 每路图像保存目标采样率；不能高于实际源帧率且受写盘负载影响 |
+| `cameras` | head、left_wrist、right_wrist 的不重复列表，也可 [] | 相机需开启 ZMQ 输出 |
+| `camera_config_port` | 整数值 1～65535 | TCP 端口；需与 TeleImager 服务端一致，默认 60000 |
+
+缓存参数只决定保存策略，不改变控制速度；帧率配置不修改相机源帧率。
+
+#### 配置为何不一定等于实测运动
+
+摇杆打满才生成所配置的幅值，死区内输出零。SDK 接收指令成功也不代表实际速度已达到目标，底层模式、加减速、负载和机械状态仍影响运动。
+
+升降两端余量仍为 `min(0.01, 窗口宽度 × 0.2)` m，当前 0～0.42 窗口约在 0.01/0.41 m 方向停止；它是发出零速度的阈值，不是制动距离承诺。腰部目标仍受跟随偏差限制，俯仰停滞保护仍生效。以上限制有状态输出，不属于配置未读入。
+
+程序固定读取运行端项目内的 `config/body.jsonc`、`config/arms.jsonc` 和 `config/recording.jsonc`（按所启用功能加载）。不再接受配置路径选项或速度、死区、高度的命令行覆盖；双臂/身体缺省字段仍使用代码默认值，缺少配置文件或非法值会报错。运行实际读取 PC2 上的文件，不支持热加载；默认 `body.jsonc` 启动时打印路径、速度、角度窗口，录制事件 `control_start` 保留最终生效值。当前预设不是官方推荐值。
 
 ## 9. 一条录制的数据格式与文件目录
 
@@ -563,6 +1161,8 @@ recording_spool/
 
 因此，“机器人状态已保存”主要指关节、腰部和立柱等反馈，不能解释为完整的世界坐标轨迹。`task_success` 默认未知；程序正常退出或 L3 保存完成不表示任务成功。
 
+<a id="logging"></a>
+
 ## 10. 两类日志有什么区别
 
 | 项目 | 整场运行日志 | 单条任务日志 |
@@ -626,6 +1226,8 @@ fetch 现在共用一次 SSH 认证，整批任务不再逐条询问密码。连
 
 fetch 与当前项目的控制会话互斥，因此即使本条 REC SAVED，也要结束整个控制程序后再拉取。该锁不控制其他项目或外部上传工具。
 
+<a id="host-video"></a>
+
 ### 11.1 单独生成已有数据的视频
 
 ```bash
@@ -636,7 +1238,9 @@ bash deploy/make_recording_video.sh \
   --output-root /home/lab209/Datasets/G1D_Lab/videos
 ```
 
-每条生成 `videos/<episode_id>/overview.mp4` 和 `video.json`，不修改原始 episode。默认头部在上、双腕在下，20 FPS，按接收时间戳保持任务时长；断流超过 0.25 秒显示黑底 GAP。视频仅用于回看，不替代原始训练数据。视频失败不会删除主机 raw，可独立重试；PC2 源数据仍按原始数据校验结果决定是否删除。独立选项、依赖和复用规则见 [HOST_VIDEO.md](deploy/HOST_VIDEO.md)。
+每条生成 `videos/<episode_id>/overview.mp4` 和 `video.json`，不修改原始 episode。默认头部在上、双腕在下，20 FPS，按接收时间戳保持任务时长；断流超过 0.25 秒显示黑底 GAP。视频仅用于回看，不替代原始训练数据。视频失败不会删除主机 raw，可独立重试；PC2 源数据仍按原始数据校验结果决定是否删除。主机依赖见第 2.2.2 节，完整视频选项用 `bash deploy/make_recording_video.sh --help` 查看。
+
+<a id="training-data"></a>
 
 ## 12. 主机校验、标注和训练导出
 
@@ -715,6 +1319,8 @@ training/episode_.../
 
 导出使用主机磁盘临时索引控制内存增长，会复制使用到的 JPEG，因此主机要预留额外空间。raw 保持不变，导出可以重建。
 
+<a id="recovery"></a>
+
 ## 13. 未完成任务如何处理
 
 如果出现 IN_PROGRESS 或“未完成任务保留在 PC2”，不要手动删除标记或把目录当作成功任务。先结束控制，在主机备份该原始目录，再运行 recover。
@@ -741,7 +1347,7 @@ python -m g1d_pico.recording recover "$unfinished" \
 
 它创建新的 episode，保留源文件、原时间与模型/标定快照。只有末尾一行 JSONL 残缺且确认可舍弃时，才使用 `--allow-truncated`；中间损坏或索引图像校验错误仍拒绝恢复。
 
-恢复副本明确标记尾部完整性未知，不自动删除原缓存，也不自动判定成功。v2 分流文件不能还原总接收顺序，恢复时跨文件缺包计数不重建；空计数不是“没有丢包”的结论。详细规则见 [PC2_RECORDING_RECOVERY.md](deploy/PC2_RECORDING_RECOVERY.md)。
+恢复副本明确标记尾部完整性未知，不自动删除原缓存，也不自动判定成功。v2 分流文件不能还原总接收顺序，恢复时跨文件缺包计数不重建；空计数不是“没有丢包”的结论。完整恢复选项用 `python -m g1d_pico.recording recover --help` 查看。
 
 ## 14. 常见问题与诊断入口
 
@@ -770,21 +1376,10 @@ journalctl -u teleimager.service -n 100 --no-pager
 
 保留问题发生的完整 runtime 日志和对应 episode 的 metadata/manifest/quality。默认终端隐藏周期数值不意味着文件里没有它们，也不意味着控制停止。优先依据时间、状态和错误原因定位，避免只按 A 反复尝试。
 
-## 15. 相关资料与验证边界
+## 15. 资料与验证边界
 
-| 内容 | 文档 |
-|---|---|
-| 简短入口 | [README.md](README.md) |
-| 启动选项与固定配置 | [RUN_OPTIONS.md](deploy/RUN_OPTIONS.md) |
-| 初始环境和连接准备 | [PC2_DIRECT.md](deploy/PC2_DIRECT.md)、[PC2_ARMS.md](deploy/PC2_ARMS.md) |
-| 身体与手臂调参 | [BODY_CONFIG.md](deploy/BODY_CONFIG.md)、[ARM_TUNING.md](deploy/ARM_TUNING.md) |
-| 转腰、俯仰、升降 | [PC2_TORSO_LIFT.md](deploy/PC2_TORSO_LIFT.md) |
-| Dex3 控制 | [PC2_HANDS.md](deploy/PC2_HANDS.md) |
-| 参数范围来源 | [OFFICIAL_LIMITS.md](deploy/OFFICIAL_LIMITS.md) |
-| 自动运行日志 | [RUNTIME_LOGGING.md](deploy/RUNTIME_LOGGING.md) |
-| 录制和缓存 | [PC2_RECORDING.md](deploy/PC2_RECORDING.md) |
-| 主机单次认证传输与视频回看 | [HOST_VIDEO.md](deploy/HOST_VIDEO.md) |
-| 训练数据 v2 | [TRAINING_DATA.md](deploy/TRAINING_DATA.md) |
-| 恢复流程 | [PC2_RECORDING_RECOVERY.md](deploy/PC2_RECORDING_RECOVERY.md) |
+本项目仅保留 README.md 和 PROJECT_GUIDE.md 两份 Markdown 文档。README 提供日常入口，本文集中说明首次部署、按键、配置、录制、传输与恢复。旧分阶段部署说明已移除。
 
-部分专题文档保留阶段性升级记录；日常操作以本文与当前入口脚本为准。本次仅更新说明文档，并核对源码、命令语法和文档链接，没有连接或操作机器人。PC2 的实时性能、传感器精度与实际任务质量仍须依据真机运行数据判断。
+模型来源及许可证保存在 assets/g1d/SOURCE 和 LICENSE；官方 IK 改编声明及许可证保存在 third_party/unitree_xr/NOTICE 和 LICENSE；SDK/DDS 许可证保存在 bridge/。部署时一并保留这些文件。
+
+tests/ 包含离线回归测试，开发时保留，不需要部署到 PC2。测试通过不等于完成真机验证；实时性能、传感器精度和任务质量需依据真机运行数据判断。

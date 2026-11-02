@@ -49,7 +49,7 @@ bash deploy/fetch_pc2_recordings.sh \
   --delete-after-verify
 ```
 
-只有内容校验通过的完整任务才会按该选项删除 PC2 源缓存。去掉 `--delete-after-verify` 可保留源数据；未完成目录按 [恢复说明](deploy/PC2_RECORDING_RECOVERY.md) 处理。
+只有内容校验通过的完整任务才会按该选项删除 PC2 源缓存。去掉 `--delete-after-verify` 可保留源数据；未完成目录按 [恢复说明](PROJECT_GUIDE.md#recovery) 处理。
 
 fetch 现在复用单条 SSH 连接：正确认证一次后，本轮各条传输不再重复询问密码。加 `--with-video` 可在拉取结束后由主机生成三路拼接 MP4，默认放入 `G1D_Lab/videos/<episode_id>/overview.mp4`，原始数据不变。已经拉取的任务可单独转换：
 
@@ -59,7 +59,7 @@ bash deploy/make_recording_video.sh \
   --output-root /home/lab209/Datasets/G1D_Lab/videos
 ```
 
-命令、视频时间对齐和缺帧提示见 [主机传输与 MP4 回看](deploy/HOST_VIDEO.md)。这次功能只更新主机，无需 PC2 编译。
+命令、视频时间对齐和缺帧提示见 [主机传输与 MP4 回看](PROJECT_GUIDE.md#host-video)。视频在主机生成。
 
 ## 自动运行日志
 
@@ -75,7 +75,7 @@ bash deploy/record_pc2.sh --full-log \
   --instruction "实验室导航与取放物体" --scene lab209 -- --with-hands
 ```
 
-运行日志与 episode 的 `logs/console.log`（旧 v1 为根目录 console.log） 分开，完整文件不受终端显示模式影响。运行日志不计入录制缓存额度，也不会由 fetch 自动传回主机。配置、故障提示及本次同步命令见 [运行日志说明](deploy/RUNTIME_LOGGING.md)。运行日志功能本身只涉及 Python；当前训练数据 v2 的关节动态反馈升级需重新编译 C++。
+运行日志与 episode 的 `logs/console.log`（旧 v1 为根目录 console.log） 分开，完整文件不受终端显示模式影响。运行日志不计入录制缓存额度，也不会由 fetch 自动传回主机。配置和故障提示见 [运行日志说明](PROJECT_GUIDE.md#logging)。
 
 ## 配置与编译
 
@@ -88,35 +88,27 @@ bash deploy/record_pc2.sh --full-log \
 | [calibration.jsonc](config/calibration.jsonc) | 相机/TCP 标定模板，未测数据保持 null |
 | [logging.jsonc](config/logging.jsonc) | 自动运行日志路径、数量上限、刷新与提示间隔 |
 
-配置支持 `//` 行注释。录制另固定读取 `config/dataset.jsonc` 与 `config/calibration.jsonc`，详见 [训练数据结构与使用](deploy/TRAINING_DATA.md)。程序固定读取运行端项目内的 `config/body.jsonc`、`config/arms.jsonc`、`config/recording.jsonc` 和 `config/logging.jsonc`（按所启用功能加载）。不再接受配置路径选项或速度、死区、高度的命令行覆盖；双臂/身体缺省字段仍使用代码默认值，缺少配置文件或非法值会报错。实际读取 PC2 文件，修改后重启生效。只改合法配置值不需要编译。
+配置支持 `//` 行注释。录制另固定读取 `config/dataset.jsonc` 与 `config/calibration.jsonc`，详见 [训练数据结构与使用](PROJECT_GUIDE.md#training-data)。程序固定读取运行端项目内的 `config/body.jsonc`、`config/arms.jsonc`、`config/recording.jsonc` 和 `config/logging.jsonc`（按所启用功能加载）。不再接受配置路径选项或速度、死区、高度的命令行覆盖；双臂/身体缺省字段仍使用代码默认值，缺少配置文件或非法值会报错。实际读取 PC2 文件，修改后重启生效。只改合法配置值不需要编译。
 
-保留的功能开关、任务参数与本次同步步骤见 [启动选项](deploy/RUN_OPTIONS.md)。
+功能开关和任务参数见 [启动选项](PROJECT_GUIDE.md#run-options)。
 
-**关节动态反馈记录与此前官方范围升级涉及 C++，同步后需在 PC2 编译：**
+**首次部署或修改 C++ / SDK 后，在 PC2 编译：**
 
 ```bash
 cd /home/unitree/Proj/Proj_PICO_G1-D
 bash deploy/build_on_pc2.sh deps/unitree_sdk2
 ```
 
-启动会检查 AGV / 上身桥的范围版本；若 Python 和二进制不一致，会明确报错。全部 31 项参数的允许范围、来源及区别见 [官方范围说明](deploy/OFFICIAL_LIMITS.md)。
+启动会检查 AGV / 上身桥的范围版本；若 Python 和二进制不一致，会明确报错。控制与录制参数的允许范围、来源及区别见 [参数范围说明](PROJECT_GUIDE.md#parameter-limits)。
 
 ## 文档导航
 
-| 内容 | 文档 |
+| 内容 | 位置 |
 |---|---|
-| 自动运行日志与终端显示 | [RUNTIME_LOGGING.md](deploy/RUNTIME_LOGGING.md) |
-| 启动选项与固定配置 | [RUN_OPTIONS.md](deploy/RUN_OPTIONS.md) |
-| 项目架构与代码导读 | [PROJECT_GUIDE.md](PROJECT_GUIDE.md) |
-| 初始 PC2 环境 | [PC2_DIRECT.md](deploy/PC2_DIRECT.md) |
-| 双臂依赖与启动 | [PC2_ARMS.md](deploy/PC2_ARMS.md) |
-| 配置同步与使用 | [BODY_CONFIG.md](deploy/BODY_CONFIG.md) |
-| 速度和映射调参 | [ARM_TUNING.md](deploy/ARM_TUNING.md) |
-| 转腰、俯仰与升降 | [PC2_TORSO_LIFT.md](deploy/PC2_TORSO_LIFT.md) |
-| Dex3 控制与抓握状态 | [PC2_HANDS.md](deploy/PC2_HANDS.md) |
-| 训练数据 v2、标注、离线导出、本次同步编译 | [TRAINING_DATA.md](deploy/TRAINING_DATA.md) |
-| 采集、数据格式与传输 | [PC2_RECORDING.md](deploy/PC2_RECORDING.md) |
-| 未完成任务恢复 | [PC2_RECORDING_RECOVERY.md](deploy/PC2_RECORDING_RECOVERY.md) |
-| 早期有线及转发部署记录 | [历史 README](deploy/LEGACY_README.md) |
+| 首次连接、证书、环境和部署编译 | [项目指南第 2 节](PROJECT_GUIDE.md#installation) |
+| 启动选项与手柄操作 | [启动选项](PROJECT_GUIDE.md#run-options)、[按键与恢复](PROJECT_GUIDE.md#controls) |
+| 配置与参数范围 | [配置说明](PROJECT_GUIDE.md#configuration)、[范围来源](PROJECT_GUIDE.md#parameter-limits) |
+| 录制、日志、回看和训练导出 | [录制](PROJECT_GUIDE.md#recording)、[日志](PROJECT_GUIDE.md#logging)、[视频](PROJECT_GUIDE.md#host-video)、[导出](PROJECT_GUIDE.md#training-data) |
+| 未完成任务恢复 | [恢复流程](PROJECT_GUIDE.md#recovery) |
 
-早期主机转发方案仍有代码保留，当前 PC2 直接运行方案不需要 `remote_server.py` 或 8765 SSH 隧道。历史记录中的阶段性功能描述不作为当前功能清单。
+控制直接运行在 PC2；主机负责部署和任务结束后的数据传输。所有当前运行、录制和数据处理脚本保留在 deploy/。第三方许可证及来源声明随代码保留。

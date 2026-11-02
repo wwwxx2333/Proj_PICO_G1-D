@@ -7,7 +7,7 @@ from pathlib import Path
 import time
 import sys
 
-from .bridge import AgvBridge, RemoteAgvBridge
+from .bridge import AgvBridge
 from .arm_config import ArmConfig
 from .body_config import BodyConfig
 from .config_paths import ARM_CONFIG, BODY_CONFIG
@@ -24,7 +24,7 @@ def parse_args() -> argparse.Namespace:
         epilog="Tuning is always read from project config/body.jsonc and config/arms.jsonc; "
                "edit those files and restart. CLI tuning overrides are not supported.")
     parser.add_argument("--full-log", action="store_true", help="Show all runtime logs; file logging is always complete")
-    parser.add_argument("--robot-ip", default="192.168.123.164", help="G1-D PC2 camera server")
+    parser.add_argument("--robot-ip", default="127.0.0.1", help="TeleImager camera server (PC2 localhost by default)")
     parser.add_argument("--cert", help="TeleVuer HTTPS certificate (or XR_TELEOP_CERT)")
     parser.add_argument("--key", help="TeleVuer HTTPS private key (or XR_TELEOP_KEY)")
     parser.add_argument("--no-camera", action="store_true", help="PICO pass-through view; no robot camera needed")
@@ -32,9 +32,8 @@ def parse_args() -> argparse.Namespace:
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--base-only", action="store_true", help="AGV base movement only; disable column lift")
     modes.add_argument("--lift-only", action="store_true", help="In live mode, enable lift movement only")
-    parser.add_argument("--bridge-bin", type=Path, default=Path(__file__).resolve().parents[1] / "bridge/build/g1d_agv_bridge")
-    parser.add_argument("--network-interface", default="eno1", help="wired interface connected to G1-D")
-    parser.add_argument("--remote-bridge-port", type=int, help="local SSH-forwarded port to the PC2 control bridge")
+    parser.add_argument("--bridge-bin", type=Path, default=Path(__file__).resolve().parents[1] / "bridge/build-arm64/g1d_agv_bridge")
+    parser.add_argument("--network-interface", default="eth0", help="PC2 internal robot network interface")
     parser.add_argument("--with-hands", action="store_true", help="add left/right Dex3-1 trigger control; requires --with-arms")
     parser.add_argument("--hand-bridge-bin", type=Path, default=Path(__file__).resolve().parents[1] / "bridge/build-arm64/g1d_hand_bridge")
     parser.add_argument("--with-arms", action="store_true", help="G1-D arms and waist yaw/pitch on PC2, with base and optional lift")
@@ -44,12 +43,10 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if (args.base_only or args.lift_only) and not args.live:
         parser.error("--base-only and --lift-only require --live")
-    if args.remote_bridge_port is not None and not args.live:
-        parser.error("--remote-bridge-port requires --live")
     if args.with_hands and not args.with_arms:
         parser.error("--with-hands requires --with-arms")
-    if args.with_arms and (not args.live or args.lift_only or args.remote_bridge_port is not None):
-        parser.error("--with-arms requires local --live with base or base+lift (no remote bridge)")
+    if args.with_arms and (not args.live or args.lift_only):
+        parser.error("--with-arms requires --live with base or base+lift")
     # Paths come from this package, never from cwd or CLI overrides.
     args.body_config = BODY_CONFIG
     args.arm_config = ARM_CONFIG
@@ -112,12 +109,8 @@ def _run_control() -> None:
         )
         if args.live:
             mode = "base" if args.base_only else "lift" if args.lift_only else "both"
-            if args.remote_bridge_port is None:
-                bridge = AgvBridge(args.bridge_bin, args.network_interface,
-                                   args.height_min_m, args.height_max_m, mode)
-            else:
-                bridge = RemoteAgvBridge(args.remote_bridge_port,
-                                         args.height_min_m, args.height_max_m, mode)
+            bridge = AgvBridge(args.bridge_bin, args.network_interface,
+                               args.height_min_m, args.height_max_m, mode)
         if args.with_arms:
             from .arms import ArmSession
             arms = ArmSession(args.arm_bridge_bin, args.network_interface, args.arm_urdf,

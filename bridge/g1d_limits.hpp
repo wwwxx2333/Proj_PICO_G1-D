@@ -1,6 +1,6 @@
 #pragma once
 // Official SDK command bounds and G1-D URDF position bounds.
-// Sources: deploy/OFFICIAL_LIMITS.md. Mirror of g1d_pico/limits.py.
+// Sources: PROJECT_GUIDE.md section 8.1. Mirror of g1d_pico/limits.py.
 #include <cmath>
 #include <iomanip>
 #include <ostream>

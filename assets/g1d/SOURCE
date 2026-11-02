@@ -15,4 +15,4 @@ yaw 使用 lowcmd/lowstate[12]，pitch 使用专用 `rt/waistpitchcmd` (`MotorCm
 俯仰消息参数遵循专用例程的 mode=1、kp=500、kd=12、dq=0、tau=0；目标轨迹、A/B、独立反馈时效检查为本项目适配，不执行例程的自动回零/往返动作。
 模型的名称与索引需与实际 G1-D 七自由度双臂对应；不能用于其他机器人或不同关节布局。
 
-官方 G1 IK 方法来源、适配项和双臂模型核对见 `../../third_party/unitree_xr/NOTICE.md` 与 `MODEL_COMPARISON.md`。
+官方 G1 IK 方法来源和适配项见 ../../third_party/unitree_xr/NOTICE。双臂模型核对摘要也保存在该声明中。

@@ -104,12 +104,19 @@ class ConfigCommentsTests(unittest.TestCase):
                 (run if operation == 'run' else lease).assert_called_once()
 
     def test_host_fetch_default_points_to_remote_jsonc(self):
+        from inspect import signature
         from g1d_pico.recording import __main__ as cli
+        from g1d_pico.recording.transfer import fetch as fetch_operation
         with patch('sys.argv', ['recording', 'fetch', '--destination', str(self.path.parent)]), \
              patch('g1d_pico.recording.transfer.fetch') as fetch:
             self.assertEqual(cli.main(), 0)
-        self.assertEqual(fetch.call_args.args[3], self.path.parent)
-        self.assertEqual(len(fetch.call_args.args), 5)  # No config-path parameter.
+        fetch.assert_called_once()
+        arguments = signature(fetch_operation).bind(*fetch.call_args.args, **fetch.call_args.kwargs).arguments
+        self.assertEqual(arguments['destination'], self.path.parent)
+        self.assertFalse(arguments['delete_after_verify'])
+        self.assertFalse(arguments['with_video'])
+        self.assertIsNone(arguments['video_output_root'])
+        self.assertNotIn('config', arguments)  # Settings are loaded by the PC2 lease.
 
     def test_recording_cli_rejects_config_selection_for_all_operations(self):
         from contextlib import redirect_stderr

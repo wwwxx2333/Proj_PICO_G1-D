@@ -51,8 +51,6 @@ class HandBridge:
         if not binary.is_file():
             raise FileNotFoundError(f'Compile Dex3-1 hand bridge first: {binary}')
         runtime_lib = binary.resolve().parent / 'lib'
-        if not runtime_lib.is_dir():
-            runtime_lib = Path(__file__).resolve().parents[1] / 'bridge/lib'
         environment = os.environ.copy()
         environment['LD_LIBRARY_PATH'] = os.pathsep.join(filter(None, (
             str(runtime_lib), environment.get('LD_LIBRARY_PATH'))))

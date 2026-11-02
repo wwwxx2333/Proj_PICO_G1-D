@@ -164,7 +164,7 @@ class ArmSessionTests(unittest.TestCase):
         args = SimpleNamespace(body_config=URDF.parents[2] / "config/body.jsonc", body_settings=BodyConfig(),
                                no_camera=True, live=True, base_only=True, lift_only=False,
                                with_arms=True, with_hands=False, skip_arm_home=True, arm_config=URDF.parents[2] / "config/arms.jsonc", cert=None, key=None, bridge_bin=Path("unused"),
-                               network_interface="eth0", remote_bridge_port=None,
+                               network_interface="eth0",
                                height_min_m=None, height_max_m=None, max_forward_mps=0.1,
                                max_yaw_rps=0.15, max_lift=0.15, arm_bridge_bin=Path("unused"),
                                arm_urdf=URDF)

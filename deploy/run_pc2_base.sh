@@ -57,7 +57,7 @@ cert="$project_root/.local/https/cert.pem"
 key="$project_root/.local/https/key.pem"
 
 if [[ ! -x "$runtime_python" || ! -r "$cert" || ! -r "$key" ]]; then
-    echo "Missing runtime or certificates. Run deploy/prepare_pc2_direct.sh first." >&2
+    echo "Missing runtime or certificates. Follow PROJECT_GUIDE.md sections 2.1.4 and 2.3." >&2
     exit 2
 fi
 if ! $camera_only; then
@@ -70,7 +70,7 @@ fi
 
 if $with_arms; then
     if [[ ! -x "$project_root/bridge/build-arm64/g1d_arm_bridge" ]]; then
-        echo "Run deploy/prepare_pc2_arms.sh before enabling arms." >&2
+        echo "Missing ARM64 arm bridge. Follow PROJECT_GUIDE.md section 2.3 and run deploy/build_on_pc2.sh deps/unitree_sdk2." >&2
         exit 2
     fi
     "$runtime_python" -c 'import casadi; from pinocchio import casadi as cpin'

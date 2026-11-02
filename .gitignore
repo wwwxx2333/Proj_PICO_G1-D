@@ -4,3 +4,12 @@ __pycache__/
 .env
 *.log
 logs/runtime/
+
+# Generated runtime files, dependencies and build outputs
+/.local/
+/.test-build/
+/.pytest_cache/
+/deps/
+/bridge/build/
+/bridge/build-arm64/
+/logs/

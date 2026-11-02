@@ -45,13 +45,13 @@ cmake -S "$project_root/bridge" -B "$bridge_build" \
     -DCMAKE_PREFIX_PATH="$sdk_install"
 cmake --build "$bridge_build" -j2
 
-# Keep ARM64 CycloneDDS next to the ARM64 bridge.  The desktop's x86-64
-# bridge/lib directory remains untouched and cannot be loaded by this binary.
+# Keep the matching ARM64 CycloneDDS libraries beside the executables.
 mkdir -p "$bridge_build/lib"
 cp "$sdk_source/thirdparty/lib/aarch64/libddsc.so" "$bridge_build/lib/"
 cp "$sdk_source/thirdparty/lib/aarch64/libddscxx.so" "$bridge_build/lib/"
 ln -sfn libddsc.so "$bridge_build/lib/libddsc.so.0"
 ln -sfn libddscxx.so "$bridge_build/lib/libddscxx.so.0"
+cp "$project_root/bridge/CYCLONEDDS_LICENSE" "$project_root/bridge/CYCLONEDDS_CXX_LICENSE" "$bridge_build/lib/"
 
 echo "ARM64 bridge: $bridge_build/g1d_agv_bridge"
 echo "Read-only height probe: $bridge_build/g1d_height_probe"
