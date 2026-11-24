@@ -30,6 +30,8 @@ conda activate pico_g1d
 bash deploy/run_pc2_arms.sh --with-hands
 ```
 
+启动时自动检查当前无线 IP 对应的 HTTPS 证书：有效且私钥匹配时复用，否则先生成并校验新证书，再备份、替换旧文件。换 Wi-Fi 前先正常退出程序，换网后重新启动即可，无需手动删证书；PICO 可能需要重新接受新证书。也可只运行 `bash deploy/prepare_pc2_https.sh` 准备证书，该命令不启动控制程序。
+
 需要采集时，用下面的命令替代上面的控制命令，不要同时启动两份：
 
 ```bash

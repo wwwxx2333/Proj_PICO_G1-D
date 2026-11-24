@@ -14,6 +14,7 @@ usage() {
     echo "Default: live base control and camera; right A arms, right B disarms."
     echo "Height limits must be verified rt/hispeed_state.y coordinates, not overall robot height."
     echo "Optional environment: PICO_G1D_PYTHON=/absolute/path/to/pico_g1d/bin/python"
+    echo "HTTPS certificates are checked and, when needed, backed up and renewed for the Wi-Fi IP."
 }
 camera_only=false
 with_arms=false
@@ -56,8 +57,12 @@ bridge_bin="$project_root/bridge/build-arm64/g1d_agv_bridge"
 cert="$project_root/.local/https/cert.pem"
 key="$project_root/.local/https/key.pem"
 
-if [[ ! -x "$runtime_python" || ! -r "$cert" || ! -r "$key" ]]; then
-    echo "Missing runtime or certificates. Follow PROJECT_GUIDE.md sections 2.1.4 and 2.3." >&2
+if [[ ! -x "$runtime_python" ]]; then
+    echo "Missing Python runtime. Follow PROJECT_GUIDE.md section 2.3." >&2
+    exit 2
+fi
+if [[ ! -r "$project_root/deploy/prepare_pc2_https.sh" ]]; then
+    echo "Missing deploy/prepare_pc2_https.sh; sync the updated deployment scripts." >&2
     exit 2
 fi
 if ! $camera_only; then
@@ -81,15 +86,11 @@ if $with_hands && [[ ! -x "$project_root/bridge/build-arm64/g1d_hand_bridge" ]];
     exit 2
 fi
 
-# Check TLS and port availability before any SDK2 client can be created.
-"$runtime_python" - "$cert" "$key" <<'PY'
+# Check imports and port availability before changing TLS files or creating SDK2 clients.
+"$runtime_python" - <<'PY'
 import socket
-import ssl
-import sys
 from teleimager.image_client import ImageClient
 from televuer.televuer import TeleVuer
-context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-context.load_cert_chain(sys.argv[1], sys.argv[2])
 with socket.socket() as port_check:
     # Match the web server's restart behavior: TIME_WAIT is not a live listener.
     port_check.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -104,6 +105,13 @@ if [[ -z "$wifi_ip" ]]; then
     echo "PC2 wlan0 has no IPv4 address. Connect it to the PICO Wi-Fi first." >&2
     exit 2
 fi
+bash "$project_root/deploy/prepare_pc2_https.sh" "$wifi_ip"
+"$runtime_python" - "$cert" "$key" <<'PY'
+import ssl
+import sys
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(sys.argv[1], sys.argv[2])
+PY
 openssl verify -CAfile "$cert" -verify_ip "$wifi_ip" "$cert"
 
 echo "PICO page: https://$wifi_ip:8012/?ws=wss://$wifi_ip:8012"

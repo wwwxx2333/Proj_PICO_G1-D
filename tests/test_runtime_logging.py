@@ -308,6 +308,7 @@ while count < 2: time.sleep(.02)
         executable(self.root/'bin/uname','echo aarch64')
         executable(self.root/'bin/ip','if [[ $1 == -4 ]]; then echo "4: wlan0 inet 192.168.1.118/24"; fi')
         executable(self.root/'bin/openssl','exit 0')
+        executable(self.root/'deploy/prepare_pc2_https.sh','exit 0')
         executable(self.root/'bin/runtime',f'if [[ $1 == -c || $1 == - ]]; then exit 0; fi\nexec "{sys.executable}" "$@"')
         for name in ('g1d_agv_bridge','g1d_arm_bridge','g1d_hand_bridge'):
             executable(self.root/'bridge/build-arm64'/name,'exit 99')
@@ -332,8 +333,8 @@ while count < 2: time.sleep(.02)
 
     def test_preflight_failure_is_automatically_logged(self):
         self.install_fake_robot_launch()
-        (self.root/'.local/https/cert.pem').unlink()
+        (self.root/'bridge/build-arm64/g1d_arm_bridge').unlink()
         result=subprocess.run(['bash','deploy/run_pc2_arms.sh'],cwd=self.root,env=self.env,
                               capture_output=True,text=True,timeout=10)
         self.assertEqual(result.returncode,2,result.stdout+result.stderr)
-        self.assertIn('Missing runtime or certificates',self.log_text())
+        self.assertIn('Missing ARM64 arm bridge',self.log_text())

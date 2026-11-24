@@ -119,99 +119,52 @@ ssh unitree@192.168.1.118 'mkdir -p /home/unitree/Proj/Proj_PICO_G1-D'
 |---|---|
 | `g1d_pico/`、`bridge/`、`deploy/`、`assets/`、`third_party/`、`config/`、`deps/` | 主机按部署清单同步时创建 |
 | `.local/install/` | 2.3.2 配置 Conda 环境、写入依赖约束时创建 |
-| `.local/https/` | 2.1.4 生成证书时由该段命令创建 |
+| `.local/https/` | 2.1.4 证书脚本或首次启动时自动创建 |
 | `bridge/build-arm64/`、`.local/sdk2-build-arm64/`、`.local/sdk2-arm64/` | PC2 编译时创建 |
 | `logs/runtime/` | 启动程序时创建 |
 | `.local/recording_spool/` | 启动录制流程时创建
 
 #### 2.1.4 在 PC2 生成 PICO 网址访问证书
 
-PICO 页面由 PC2 上的 TeleVuer 提供，证书和私钥也保存在 PC2。**证书要包含 PC2 的无线 IP，不是主机 IP、PICO IP，也不是内部有线地址。**
+PICO 页面由 PC2 上的 TeleVuer 提供，证书和私钥也保存在 PC2。**证书要包含 PC2 当前的无线 IP，不是主机 IP、PICO IP，也不是内部有线地址。** 换 Wi-Fi 后继续使用 IP 访问，以启动器打印的网址为准。
 
-**执行位置：PC2。无需激活 `pico_g1d`。** 首先获取并核对最终运行网络中的无线地址：
+`run_pc2_base.sh`、`run_pc2_arms.sh` 和 `record_pc2.sh` 会在启动控制程序之前自动检查证书。已有证书覆盖当前 IP、仍在有效期内且私钥匹配时直接复用；否则先在临时目录生成并校验新证书，再备份并替换旧文件。无需手动删除旧证书。换 Wi-Fi 但 IP 未变时，可继续使用原来的有效证书。
+
+若想在安装 Python 环境前单独准备证书，先在**主机**同步这个脚本（2.2.5 的完整部署清单也包含它；地址按 PC2 当前 IP 修改）：
+
+```bash
+cd /home/lab209/Proj/Proj_PICO_G1-D
+rsync -av --relative deploy/prepare_pc2_https.sh \
+  unitree@192.168.1.118:/home/unitree/Proj/Proj_PICO_G1-D/
+```
+
+然后在 **PC2** 执行。无需激活 `pico_g1d`，无需 `sudo`；脚本使用已有的 `ip`、`openssl`、`ss` 和 `flock`：
 
 ```bash
 cd /home/unitree/Proj/Proj_PICO_G1-D
-pc2_wifi_ip=$(ip -4 -o addr show dev wlan0 | awk '{split($4, a, "/"); print a[1]; exit}')
-printf 'PC2 Wi-Fi IP：%s\n' "$pc2_wifi_ip"
+bash deploy/prepare_pc2_https.sh
 ```
 
-确认输出正确后，执行以下整段命令。它会拒绝覆盖已有证书；如果已有可用证书，直接做下一步校验即可。
-
-```bash
-bash -s -- "$pc2_wifi_ip" <<'BASH'
-set -euo pipefail
-cert_dir=/home/unitree/Proj/Proj_PICO_G1-D/.local/https
-wifi_ip=$1
-if [[ -z "$wifi_ip" ]]; then
-    echo 'wlan0 没有 IPv4 地址，请先完成无线连接。' >&2
-    exit 1
-fi
-mkdir -p "$cert_dir"
-chmod 700 "$cert_dir"
-if [[ -e "$cert_dir/cert.pem" || -e "$cert_dir/key.pem" ]]; then
-    echo '证书目录已有文件，请先校验，不直接覆盖。' >&2
-    exit 1
-fi
-temp_dir=$(mktemp -d "$cert_dir/new.XXXXXX")
-umask 077
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout "$temp_dir/key.pem" \
-  -out "$temp_dir/cert.pem" \
-  -subj '/CN=g1d-pc2' \
-  -addext "subjectAltName=IP:$wifi_ip,IP:127.0.0.1,DNS:localhost"
-openssl verify -CAfile "$temp_dir/cert.pem" \
-  -verify_ip "$wifi_ip" "$temp_dir/cert.pem"
-mv "$temp_dir/key.pem" "$cert_dir/key.pem"
-mv "$temp_dir/cert.pem" "$cert_dir/cert.pem"
-rmdir "$temp_dir"
-BASH
-```
-
-这会生成：
+它自动读取 `wlan0` 的 IPv4 地址并检查以下文件：
 
 ```text
 /home/unitree/Proj/Proj_PICO_G1-D/.local/https/cert.pem
 /home/unitree/Proj/Proj_PICO_G1-D/.local/https/key.pem
 ```
 
-自签名 HTTPS 的做法参考 [TeleVuer 官方说明](https://github.com/unitreerobotics/televuer/blob/766de45e74373ae0ea66321d942ce538385655a5/README.md)，这里额外加入本项目启动检查需要的 IP SAN。`key.pem` 是私钥，留在 PC2，不复制给 PICO。
+输出 `HTTPS REUSE` 表示原证书可继续使用；`HTTPS CREATED` 表示已生成有效期为 365 天的新证书；`HTTPS BACKUP` 后是旧文件的备份目录。备份位于项目 `.local/https-backup-时间戳.随机字符/`，目录权限为 700。证书缺少其中一个文件时，会保留仍存在的文件后补齐一对新证书。新证书生成或校验失败时不替换原文件。
 
-校验当前 IP、有效期及证书/私钥是否匹配：
+**换网顺序：先正常退出控制和录制程序，再切换 Wi-Fi，最后按平时的命令重新启动。** 启动器会自动处理证书，不在运行中热切换证书。单独运行证书脚本时，如果需要换证但 8012 已被占用，也会提示先退出原程序。
+
+新证书生成后，PICO 浏览器可能需要重新接受一次；脚本无法代替浏览器的信任操作。仅更新证书不会固定 Wi-Fi IP，也不改动网卡、系统证书库或 `tv` 相机服务。`key.pem` 及备份中的私钥留在 PC2，不复制给 PICO。
+
+自签名 HTTPS 的做法参考 [TeleVuer 官方说明](https://github.com/unitreerobotics/televuer/blob/766de45e74373ae0ea66321d942ce538385655a5/README.md)，IP 和有效期校验使用 [OpenSSL verify](https://docs.openssl.org/3.0/man1/openssl-verification-options/)。需要查看证书内容时可执行：
 
 ```bash
-bash <<'BASH'
-set -euo pipefail
-cd /home/unitree/Proj/Proj_PICO_G1-D
-pc2_wifi_ip=$(ip -4 -o addr show dev wlan0 | awk '{split($4, a, "/"); print a[1]; exit}')
-if [[ -z "$pc2_wifi_ip" ]]; then
-    echo 'wlan0 没有 IPv4 地址，请先完成无线连接。' >&2
-    exit 1
-fi
 openssl x509 -in .local/https/cert.pem -noout -dates -ext subjectAltName
-openssl verify -CAfile .local/https/cert.pem \
-  -verify_ip "$pc2_wifi_ip" .local/https/cert.pem
-cert_public_key=$(openssl x509 -in .local/https/cert.pem -pubkey -noout)
-key_public_key=$(openssl pkey -in .local/https/key.pem -pubout)
-if [[ "$cert_public_key" != "$key_public_key" ]]; then
-    echo '证书与私钥不匹配，请检查文件。' >&2
-    exit 1
-fi
-echo '证书与私钥匹配。'
-BASH
 ```
 
-应看到 `cert.pem: OK` 和“证书与私钥匹配”。如果 IP 改变或证书过期，先停止控制程序，将完整旧证书对备份到另一个目录，再重新生成：
-
-```bash
-cd /home/unitree/Proj/Proj_PICO_G1-D
-cert_backup=$(mktemp -d .local/https-backup.XXXXXX)
-mv .local/https/cert.pem .local/https/key.pem "$cert_backup/"
-```
-
-这个备份命令仅在原本两份文件都存在时使用。完成备份后，从本小节获取 IP 的步骤重新执行。PICO 需要重新接受新证书。
-
-**生成证书不等于启动网页服务。** 此时访问 `8012` 还不会出现页面，需要等 2.3 编译并启动程序之后再连接。
+**单独准备证书不等于启动网页服务。** 此时访问 `8012` 还不会出现页面，需要完成部署并启动 PICO 程序后再连接。
 
 
 ### 2.2 主机：项目目录，主机环境与向PC2部署
@@ -401,7 +354,7 @@ rsync -av --relative \
   g1d_pico/ \
   bridge/CMakeLists.txt bridge/*.cpp bridge/*.hpp bridge/*LICENSE \
   assets/g1d/ third_party/unitree_xr/ \
-  deploy/build_on_pc2.sh deploy/runtime_logging.sh \
+  deploy/build_on_pc2.sh deploy/runtime_logging.sh deploy/prepare_pc2_https.sh \
   deploy/run_pc2_base.sh deploy/run_pc2_arms.sh deploy/record_pc2.sh \
   "$pc2_host:$pc2_root/"
 ```
@@ -444,9 +397,26 @@ rsync -av --relative config/body.jsonc "$pc2_host:$pc2_root/"
 
 这条会覆盖 PC2 的 `body.jsonc`，仅在确定要采用主机这份参数时执行。
 
+如果偷懒，在修改后直接执行这段命令也是可以的，这会无脑同步
+```bash
+rsync -av --relative \
+  --exclude='.git' --exclude='.venv/' \
+  --exclude='__pycache__/' --exclude='*.pyc' \
+  --exclude='build/' --exclude='dist/' --exclude='*.egg-info/' \
+  --exclude='/deps/unitree_sdk2/lib/x86_64/' \
+  --exclude='/deps/unitree_sdk2/thirdparty/lib/x86_64/' \
+  g1d_pico/ \
+  bridge/CMakeLists.txt bridge/*.cpp bridge/*.hpp bridge/*LICENSE \
+  assets/g1d/ third_party/unitree_xr/ \
+  deploy/build_on_pc2.sh deploy/runtime_logging.sh deploy/prepare_pc2_https.sh \
+  deploy/run_pc2_base.sh deploy/run_pc2_arms.sh deploy/record_pc2.sh \
+  deps/unitree_sdk2/ deps/televuer/ deps/teleimager/ deps/SOURCE_VERSIONS.txt \
+  unitree@192.168.1.118:/home/unitree/Proj/Proj_PICO_G1-D/
+```
+
 ### 2.3 PC2：创建 Conda 环境、安装依赖与编译
 
-#### 2.3.1 核对主机部署的代码和已有证书
+#### 2.3.1 核对主机部署的代码
 
 **先在主机登录：**
 
@@ -466,10 +436,10 @@ ls deps/unitree_sdk2/lib/aarch64/libunitree_sdk2.a
 ls deps/unitree_sdk2/thirdparty/lib/aarch64/libddsc.so
 ls deps/unitree_sdk2/thirdparty/lib/aarch64/libddscxx.so
 ls deps/televuer/pyproject.toml deps/teleimager/pyproject.toml
-ls .local/https/cert.pem .local/https/key.pem
+ls deploy/prepare_pc2_https.sh
 ```
 
-确认这些文件已经到位后，继续创建项目环境。若缺少文件，先回到 2.2.5 补齐部署。
+确认这些文件已经到位后，继续创建项目环境。若缺少文件，先回到 2.2.5 补齐部署。证书可以按 2.1.4 提前准备，也可以由首次启动自动创建。
 
 #### 2.3.2 在现有 Conda 中创建新的 pico_g1d 环境
 
@@ -520,10 +490,13 @@ numpy==1.26.4
 opencv-python==4.11.0.86
 vuer==0.0.60
 casadi==3.6.7
+params-proto==2.13.2
 EOF
 
 python -m pip install --upgrade pip 'setuptools>=64' wheel
 ```
+
+固定 `params-proto==2.13.2` 是为了兼容 `vuer==0.0.60` 使用的 `Flag`、`PrefixProto` 和 `Proto` 接口。PC2 上的 `params-proto==3.3.0` 已出现 `cannot import name 'Flag'`；Vuer 会隐藏这个底层错误并打印通用的 aiohttp 缺失提示。`pip check` 无法发现这类接口不兼容，因此还需执行下面的实际导入检查。已有环境遇到此错误时，先更新上述约束文件，再运行 `python -m pip install -c .local/install/pip-constraints.txt 'params-proto==2.13.2'`。
 
 接着执行 **2.3.3**，在同一个 `pico_g1d` 环境中安装本地 Python 依赖。新环境独立创建，原有 `tv` 相机服务保持原环境。
 
@@ -1354,6 +1327,7 @@ python -m g1d_pico.recording recover "$unfinished" \
 | 现象 | 优先检查 |
 |---|---|
 | PICO 8012 页面无法访问 | PC2 无线 IP、同网互通、程序仍运行、证书匹配；以启动打印 URL 为准 |
+| 换 Wi-Fi 后地址改变 | 正常退出后换网，再重新启动；自动备份并更新不匹配的证书，PICO 可能需重新接受证书 |
 | 8012 被占用 | PC2 执行 `ss -ltnp 'sport = :8012'`，识别旧实例并正常退出 |
 | 能看到页面但没有机器人图像 | TeleImager 服务及 60000 配置接口、头部 ZMQ；PICO 能连接不代表相机服务出帧 |
 | 启动缺少配置文件 | 同步全部所需 JSONC，尤其新增 dataset/calibration；不要仅把旧 JSON 改名 |

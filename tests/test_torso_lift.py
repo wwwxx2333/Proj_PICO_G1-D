@@ -137,6 +137,8 @@ class LauncherTests(unittest.TestCase):
         executable(fakebin / 'ip', 'if [[ $1 == -4 ]]; then echo "4: wlan0 inet 192.168.1.118/24"; fi')
         executable(fakebin / 'openssl', 'exit 0')
         executable(fakebin / 'runtime', 'if [[ ${1:-} == -u ]]; then printf "%s\\n" "$@"; fi')
+        # HTTPS lifecycle is covered with real OpenSSL in test_pc2_https.py.
+        executable(self.root / 'deploy/prepare_pc2_https.sh', 'exit 0')
         for name in ('g1d_agv_bridge', 'g1d_arm_bridge', 'g1d_hand_bridge'):
             executable(self.root / 'bridge/build-arm64' / name, 'exit 99')
         tls = self.root / '.local/https'
